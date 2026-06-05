@@ -1,0 +1,261 @@
+<Window x:Class="MultiAudioRouter.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:MultiAudioRouter"
+        mc:Ignorable="d"
+        Title="MultiAudioRouter" Height="650" Width="480"
+        Background="#121214" Foreground="#F3F4F6"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize"
+        FontFamily="Segoe UI, Arial">
+
+    <Window.Resources>
+        <!-- Color Definitions -->
+        <SolidColorBrush x:Key="BgPrimary" Color="#121214"/>
+        <SolidColorBrush x:Key="BgSecondary" Color="#1E1E24"/>
+        <SolidColorBrush x:Key="BorderColor" Color="#2D2D34"/>
+        <SolidColorBrush x:Key="AccentColor" Color="#6366F1"/>
+        <SolidColorBrush x:Key="AccentHoverColor" Color="#4F46E5"/>
+        <SolidColorBrush x:Key="SuccessColor" Color="#10B981"/>
+        <SolidColorBrush x:Key="SuccessHoverColor" Color="#059669"/>
+        <SolidColorBrush x:Key="DangerColor" Color="#EF4444"/>
+        <SolidColorBrush x:Key="DangerHoverColor" Color="#DC2626"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#F3F4F6"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#9CA3AF"/>
+
+        <!-- Custom ScrollViewer for ListBox -->
+        <Style x:Key="ModernScrollbarThumb" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="true"/>
+            <Setter Property="IsTabStop" Value="false"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="rectangle" SnapsToDevicePixels="True" Background="#4B5563" CornerRadius="3" Height="{TemplateBinding Height}" Width="{TemplateBinding Width}"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="true">
+                                <Setter TargetName="rectangle" Property="Background" Value="#6B7280"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ModernScrollBar" TargetType="ScrollBar">
+            <Setter Property="Stylus.IsPressAndHoldEnabled" Value="false"/>
+            <Setter Property="Stylus.IsFlicksEnabled" Value="false"/>
+            <Setter Property="Width" Value="6"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid x:Name="Bg" SnapsToDevicePixels="true" Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="true" IsEnabled="{TemplateBinding IsEnabled}">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.LineUpCommand" Opacity="0"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.LineDownCommand" Opacity="0"/>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource ModernScrollbarThumb}"/>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Custom CheckBox Template -->
+        <Style x:Key="ModernCheckBox" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <BulletDecorator Background="Transparent">
+                            <BulletDecorator.Bullet>
+                                <Border x:Name="Border" Width="20" Height="20" CornerRadius="6" Background="#2A2A35" BorderBrush="{StaticResource BorderColor}" BorderThickness="1.5">
+                                    <Grid>
+                                        <Path x:Name="CheckMark" Data="M 3,8 L 8,13 L 17,4" Stroke="#F3F4F6" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed"/>
+                                    </Grid>
+                                </Border>
+                            </BulletDecorator.Bullet>
+                            <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                        </BulletDecorator>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="true">
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource AccentColor}"/>
+                                <Setter TargetName="Border" Property="BorderBrush" Value="{StaticResource AccentColor}"/>
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="true">
+                                <Setter TargetName="Border" Property="BorderBrush" Value="{StaticResource AccentColor}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Button Base Style -->
+        <Style x:Key="ActionButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource AccentColor}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Height" Value="42"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Border" Background="{TemplateBinding Background}" CornerRadius="8" BorderThickness="0" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Border" Property="Opacity" Value="0.8"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Border" Property="Background" Value="#2A2A35"/>
+                                <Setter TargetName="Border" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/> <!-- Header -->
+            <RowDefinition Height="Auto"/> <!-- Control Panel -->
+            <RowDefinition Height="*"/>    <!-- Device List -->
+            <RowDefinition Height="Auto"/> <!-- Action Panel -->
+            <RowDefinition Height="Auto"/> <!-- Activity Indicator / Stats -->
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,20">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="MultiAudioRouter" FontSize="24" FontWeight="Bold" Foreground="{StaticResource TextPrimary}"/>
+                    <TextBlock Text="Route system audio to multiple outputs" FontSize="12" Foreground="{StaticResource TextSecondary}" Margin="0,2,0,0"/>
+                </StackPanel>
+                <!-- Status Dot -->
+                <Border Grid.Column="1" x:Name="StatusDot" Width="10" Height="10" CornerRadius="5" Background="#4B5563" VerticalAlignment="Center" Margin="0,0,10,0" ToolTip="Inactive"/>
+            </Grid>
+            <Border Height="1" Background="{StaticResource BorderColor}" Margin="0,15,0,0"/>
+        </StackPanel>
+
+        <!-- Control Panel (Refresh Devices) -->
+        <Grid Grid.Row="1" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Available Outputs" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"/>
+            <Button Grid.Column="1" Content="Refresh" Width="80" Height="30" Style="{StaticResource ActionButton}" Background="#2A2A35" Click="BtnRefresh_Click"/>
+        </Grid>
+
+        <!-- Device List -->
+        <Border Grid.Row="2" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="5">
+            <ListBox x:Name="LstDevices" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.Resources>
+                    <Style TargetType="ScrollBar" BasedOn="{StaticResource ModernScrollBar}"/>
+                </ListBox.Resources>
+                <!-- ListBoxItem Template -->
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Background" Value="Transparent"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Margin" Value="2"/>
+                        <Setter Property="Padding" Value="10"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ListBoxItem">
+                                    <Border x:Name="BgBorder" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter />
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="true">
+                                            <Setter TargetName="BgBorder" Property="Background" Value="#2A2A35"/>
+                                        </Trigger>
+                                        <Trigger Property="IsSelected" Value="true">
+                                            <Setter TargetName="BgBorder" Property="Background" Value="#312E81"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <!-- Item Layout -->
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/> <!-- Checkbox -->
+                                <ColumnDefinition Width="Auto"/> <!-- Device Icon -->
+                                <ColumnDefinition Width="*"/>    <!-- Details -->
+                            </Grid.ColumnDefinitions>
+                            <!-- CheckBox bound to IsSelected -->
+                            <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected}" Style="{StaticResource ModernCheckBox}" Checked="CheckBox_Changed" Unchecked="CheckBox_Changed"/>
+                            <!-- Icon path (Speaker shape) -->
+                            <Path Grid.Column="1" Margin="12,0,12,0" Width="16" Height="16" Fill="{StaticResource TextSecondary}" Stretch="Uniform"
+                                  Data="M3,9 v6 h4 l5,5 v-16 l-5,5 h-4 z M14.5,12 c0-1.77-1.02-3.29-2.5-4.03 v8.05 c1.48-.73 2.5-2.25 2.5-4.02 z M12,3.23 v2.06 c2.89,.86 5,3.54 5,6.71 s-2.11,5.85-5,6.71 v2.06 c4.01-.91 7-4.49 7-8.77 s-2.99-7.86-7-8.77 z"/>
+                            <!-- Name and description -->
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource TextSecondary}" Margin="0,2,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Border>
+
+        <!-- Start/Stop Action -->
+        <StackPanel Grid.Row="3" Margin="0,20,0,10">
+            <Button x:Name="BtnStartStop" Content="Start Routing" Style="{StaticResource ActionButton}" Background="{StaticResource SuccessColor}" Click="BtnStartStop_Click"/>
+        </StackPanel>
+
+        <!-- Activity/Status Meter -->
+        <Border Grid.Row="4" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,5,0,0">
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="TxtCaptureDevice" Text="Capture: Idle" FontSize="12" Foreground="{StaticResource TextSecondary}"/>
+                    <TextBlock Grid.Column="1" x:Name="TxtVolume" Text="0%" FontSize="12" Foreground="{StaticResource TextSecondary}" FontWeight="Bold"/>
+                </Grid>
+                <!-- Volume meter progress bar -->
+                <ProgressBar x:Name="PrgVolume" Height="6" Background="#2A2A35" Foreground="{StaticResource SuccessColor}" BorderThickness="0" Margin="0,8,0,0" Maximum="1" Value="0">
+                    <ProgressBar.Template>
+                        <ControlTemplate TargetType="ProgressBar">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="3" SnapsToDevicePixels="true">
+                                <Grid x:Name="TemplateRoot">
+                                    <Border x:Name="PART_Track" CornerRadius="3" />
+                                    <Border x:Name="PART_Indicator" HorizontalAlignment="Left" CornerRadius="3" Background="{TemplateBinding Foreground}"/>
+                                </Grid>
+                            </Border>
+                        </ControlTemplate>
+                    </ProgressBar.Template>
+                </ProgressBar>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>
