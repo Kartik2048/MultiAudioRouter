@@ -178,6 +178,79 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Custom ComboBoxItem Styling -->
+        <Style x:Key="ModernComboBoxItem" TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#1E1E24"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Gd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="true">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="true">
+                                <Setter TargetName="Gd" Property="Background" Value="#312E81"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="true">
+                                <Setter TargetName="Gd" Property="Background" Value="#6366F1"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Custom ComboBox Styling -->
+        <Style x:Key="ModernComboBox" TargetType="ComboBox">
+            <Setter Property="Background" Value="#2A2A35"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="Padding" Value="5,2"/>
+            <Setter Property="ItemContainerStyle" Value="{StaticResource ModernComboBoxItem}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Name="ToggleButton" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Background="{TemplateBinding Background}" Grid.Column="2" Focusable="false" IsChecked="{Binding Path=IsDropDownOpen,Mode=TwoWay,RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Name="Border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition />
+                                                    <ColumnDefinition Width="20" />
+                                                </Grid.ColumnDefinitions>
+                                                <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center" Fill="#9CA3AF" Data="M 0 0 L 4 4 L 8 0 Z"/>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="true">
+                                                <Setter TargetName="Border" Property="BorderBrush" Value="{StaticResource AccentColor}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter Name="ContentSite" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" Margin="8,3,23,3" VerticalAlignment="Center" HorizontalAlignment="Left" />
+                            <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                <Grid Name="DropDown" SnapsToDevicePixels="True" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <Border Name="DropDownBorder" Background="#1E1E24" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4"/>
+                                    <ScrollViewer Margin="4,6,4,6" SnapsToDevicePixels="True">
+                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Grid>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="20">
@@ -271,13 +344,44 @@
                                 <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource TextSecondary}" Margin="0,2,0,0"/>
                             </StackPanel>
-                            <!-- Delay control & Measured Latency readout stacked -->
+                            <!-- Controls Panel (Delay, Volume, Channel Isolation) -->
                             <StackPanel Grid.Column="3" Orientation="Vertical" VerticalAlignment="Center" Margin="10,0,5,0">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                    <Slider Minimum="0" Maximum="1000" Value="{Binding DelayMs, UpdateSourceTrigger=PropertyChanged}" Width="75" Margin="0,0,5,0" VerticalAlignment="Center"
-                                            Style="{StaticResource ModernSlider}"/>
-                                    <TextBlock Text="{Binding DelayMs, StringFormat={}{0}ms}" Width="45" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextAlignment="Right"/>
-                                </StackPanel>
+                                <!-- Delay Control -->
+                                <Grid Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="70"/>
+                                        <ColumnDefinition Width="45"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Delay" FontSize="10" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Width="30"/>
+                                    <Slider Grid.Column="1" Minimum="0" Maximum="1000" Value="{Binding DelayMs, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ModernSlider}" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding DelayMs, StringFormat={}{0}ms}" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextAlignment="Right"/>
+                                </Grid>
+                                <!-- Volume Control -->
+                                <Grid Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="70"/>
+                                        <ColumnDefinition Width="45"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Vol" FontSize="10" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Width="30"/>
+                                    <Slider Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Volume, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ModernSlider}" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding Volume, StringFormat={}{0:0}%}" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextAlignment="Right"/>
+                                </Grid>
+                                <!-- Channel Isolation ComboBox -->
+                                <Grid Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Chan" FontSize="10" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Width="30"/>
+                                    <ComboBox Grid.Column="1" SelectedValue="{Binding IsolationMode, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag" Style="{StaticResource ModernComboBox}" Width="115" Height="22" HorizontalAlignment="Right">
+                                        <ComboBoxItem Content="Stereo" Tag="{x:Static local:ChannelIsolationMode.Stereo}" Style="{StaticResource ModernComboBoxItem}"/>
+                                        <ComboBoxItem Content="Left Only" Tag="{x:Static local:ChannelIsolationMode.LeftOnly}" Style="{StaticResource ModernComboBoxItem}"/>
+                                        <ComboBoxItem Content="Right Only" Tag="{x:Static local:ChannelIsolationMode.RightOnly}" Style="{StaticResource ModernComboBoxItem}"/>
+                                    </ComboBox>
+                                </Grid>
+                                <!-- Measured Latency readout -->
                                 <TextBlock Text="{Binding MeasuredLatencyText}" FontSize="9" Foreground="{StaticResource TextSecondary}" HorizontalAlignment="Right" Margin="0,2,0,0"/>
                             </StackPanel>
                         </Grid>

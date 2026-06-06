@@ -7,9 +7,17 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace MultiAudioRouter
 {
+    public enum ChannelIsolationMode
+    {
+        Stereo,
+        LeftOnly,
+        RightOnly
+    }
+
     public partial class MainWindow : Window
     {
         // Device selection wrapper class
@@ -17,6 +25,7 @@ namespace MultiAudioRouter
         {
             private int delayMs;
             private int measuredLatencyMs;
+            private ChannelIsolationMode isolationMode = ChannelIsolationMode.Stereo;
 
             public string Id { get; set; }
             public string Name { get; set; }
@@ -53,9 +62,59 @@ namespace MultiAudioRouter
                 }
             }
 
+            public ChannelIsolationMode IsolationMode
+            {
+                get => isolationMode;
+                set
+                {
+                    if (isolationMode != value)
+                    {
+                        isolationMode = value;
+                        OnPropertyChanged(nameof(IsolationMode));
+                        IsolationModeChangedCallback?.Invoke(Id, isolationMode);
+                    }
+                }
+            }
+
+            public float Volume
+            {
+                get
+                {
+                    try
+                    {
+                        return Device?.AudioEndpointVolume?.MasterVolumeLevelScalar * 100f ?? 100f;
+                    }
+                    catch
+                    {
+                        return 100f;
+                    }
+                }
+                set
+                {
+                    try
+                    {
+                        if (Device?.AudioEndpointVolume != null)
+                        {
+                            float currentVol = Device.AudioEndpointVolume.MasterVolumeLevelScalar * 100f;
+                            if (Math.Abs(currentVol - value) > 0.1f)
+                            {
+                                Device.AudioEndpointVolume.MasterVolumeLevelScalar = value / 100f;
+                                OnPropertyChanged(nameof(Volume));
+                                System.Console.WriteLine($"[Volume Control] Device: '{Name}' -> Hardware Volume set to: {value:F1}%");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Console.WriteLine($"[Volume Control] Error setting hardware volume for '{Name}': {ex.Message}");
+                    }
+                }
+            }
+
             public string MeasuredLatencyText => $"Measured Latency: {measuredLatencyMs}ms";
 
             public Action<string, int> DelayChangedCallback { get; set; }
+            public Action<string, ChannelIsolationMode> IsolationModeChangedCallback { get; set; }
 
             public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
             protected void OnPropertyChanged(string propertyName)
@@ -72,8 +131,9 @@ namespace MultiAudioRouter
             public BufferedWaveProvider Buffer { get; }
             public IWaveProvider Resampler { get; }
             public DelayWaveProvider DelayProvider { get; }
+            public ChannelMatrixProvider MatrixProvider { get; }
 
-            public AudioRoute(MMDevice targetDevice, WaveFormat captureFormat)
+            public AudioRoute(MMDevice targetDevice, WaveFormat captureFormat, ChannelIsolationMode initialIsolationMode)
             {
                 TargetDevice = targetDevice;
 
@@ -110,14 +170,29 @@ namespace MultiAudioRouter
                 // Wrap finalProvider with the delay line
                 DelayProvider = new DelayWaveProvider(finalProvider);
 
+                // Convert DelayProvider (IWaveProvider) into ISampleProvider
+                var sampleSource = new WaveToSampleProvider(DelayProvider);
+
+                // Wrap sampleSource in ChannelMatrixProvider (ISampleProvider)
+                MatrixProvider = new ChannelMatrixProvider(sampleSource);
+                MatrixProvider.SetMode(initialIsolationMode);
+
+                // Convert back to IWaveProvider for WasapiOut
+                var finalWaveProvider = new SampleToWaveProvider(MatrixProvider);
+
                 Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 100);
-                Player.Init(DelayProvider);
+                Player.Init(finalWaveProvider);
                 Player.Play();
             }
 
             public void SetDelay(int milliseconds)
             {
                 DelayProvider?.SetDelay(milliseconds);
+            }
+
+            public void SetIsolationMode(ChannelIsolationMode mode)
+            {
+                MatrixProvider?.SetMode(mode);
             }
 
             public void AddSamples(byte[] data, int offset, int count)
@@ -214,6 +289,50 @@ namespace MultiAudioRouter
             }
         }
 
+        // Custom ISampleProvider for Left/Right stereo channel isolation
+        public class ChannelMatrixProvider : ISampleProvider
+        {
+            private readonly ISampleProvider sourceProvider;
+            private ChannelIsolationMode mode = ChannelIsolationMode.Stereo;
+
+            public WaveFormat WaveFormat => sourceProvider.WaveFormat;
+
+            public ChannelMatrixProvider(ISampleProvider sourceProvider)
+            {
+                this.sourceProvider = sourceProvider;
+            }
+
+            public void SetMode(ChannelIsolationMode mode)
+            {
+                this.mode = mode;
+            }
+
+            public int Read(float[] buffer, int offset, int count)
+            {
+                int samplesRead = sourceProvider.Read(buffer, offset, count);
+                if (mode == ChannelIsolationMode.Stereo || WaveFormat.Channels < 2)
+                {
+                    return samplesRead;
+                }
+
+                int channels = WaveFormat.Channels;
+                for (int i = 0; i < samplesRead; i += channels)
+                {
+                    if (mode == ChannelIsolationMode.LeftOnly)
+                    {
+                        float leftVal = buffer[offset + i];
+                        buffer[offset + i + 1] = leftVal; // Duplicate Left to Right
+                    }
+                    else if (mode == ChannelIsolationMode.RightOnly)
+                    {
+                        float rightVal = buffer[offset + i + 1];
+                        buffer[offset + i] = rightVal; // Duplicate Right to Left
+                    }
+                }
+                return samplesRead;
+            }
+        }
+
         private List<DeviceItem> devicesList = new List<DeviceItem>();
         private WasapiLoopbackCapture capture;
         private readonly Dictionary<string, AudioRoute> activeRoutes = new Dictionary<string, AudioRoute>();
@@ -243,6 +362,7 @@ namespace MultiAudioRouter
         {
             var selectedIds = devicesList.Where(d => d.IsSelected).Select(d => d.Id).ToHashSet();
             var previousDelays = devicesList.ToDictionary(d => d.Id, d => d.DelayMs);
+            var previousIsolationModes = devicesList.ToDictionary(d => d.Id, d => d.IsolationMode);
             devicesList.Clear();
 
             try
@@ -262,6 +382,8 @@ namespace MultiAudioRouter
                         }
 
                         int prevDelay = previousDelays.TryGetValue(device.ID, out int dVal) ? dVal : 0;
+                        ChannelIsolationMode prevMode = previousIsolationModes.TryGetValue(device.ID, out ChannelIsolationMode mVal) ? mVal : ChannelIsolationMode.Stereo;
+
                         var item = new DeviceItem
                         {
                             Id = device.ID,
@@ -270,9 +392,11 @@ namespace MultiAudioRouter
                             Device = device,
                             IsSelected = selectedIds.Contains(device.ID),
                             IsDefault = isDefault,
-                            DelayMs = prevDelay
+                            DelayMs = prevDelay,
+                            IsolationMode = prevMode
                         };
                         item.DelayChangedCallback = OnDeviceDelayChanged;
+                        item.IsolationModeChangedCallback = OnDeviceIsolationModeChanged;
                         devicesList.Add(item);
                     }
                 }
@@ -295,6 +419,19 @@ namespace MultiAudioRouter
                 if (activeRoutes.TryGetValue(deviceId, out var route))
                 {
                     route.SetDelay(delayMs);
+                }
+            }
+        }
+
+        private void OnDeviceIsolationModeChanged(string deviceId, ChannelIsolationMode mode)
+        {
+            string devName = devicesList.FirstOrDefault(d => d.Id == deviceId)?.Name ?? deviceId;
+            System.Console.WriteLine($"[Channel Isolation] Set isolation mode for '{devName}' to {mode}");
+            lock (routesLock)
+            {
+                if (activeRoutes.TryGetValue(deviceId, out var route))
+                {
+                    route.SetIsolationMode(mode);
                 }
             }
         }
@@ -692,8 +829,8 @@ namespace MultiAudioRouter
 
                         try
                         {
-                            System.Console.WriteLine($"[Routing] Initializing route to: '{item.Name}' with delay={item.DelayMs}ms");
-                            var route = new AudioRoute(item.Device, capture.WaveFormat);
+                            System.Console.WriteLine($"[Routing] Initializing route to: '{item.Name}' with delay={item.DelayMs}ms, isolation={item.IsolationMode}");
+                            var route = new AudioRoute(item.Device, capture.WaveFormat, item.IsolationMode);
                             route.SetDelay(item.DelayMs);
                             activeRoutes[item.Id] = route;
                         }
@@ -882,8 +1019,8 @@ namespace MultiAudioRouter
 
                 try
                 {
-                    System.Console.WriteLine($"[Routing] Initializing dynamic route to: '{item.Name}' with delay={item.DelayMs}ms");
-                    var route = new AudioRoute(item.Device, capture.WaveFormat);
+                    System.Console.WriteLine($"[Routing] Initializing dynamic route to: '{item.Name}' with delay={item.DelayMs}ms, isolation={item.IsolationMode}");
+                    var route = new AudioRoute(item.Device, capture.WaveFormat, item.IsolationMode);
                     route.SetDelay(item.DelayMs);
                     activeRoutes[item.Id] = route;
                     System.Console.WriteLine($"[Routing] Dynamic route to '{item.Name}' started successfully.");
