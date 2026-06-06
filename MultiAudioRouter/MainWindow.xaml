@@ -130,6 +130,54 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Custom Slider Styling -->
+        <Style x:Key="ModernSlider" TargetType="Slider">
+            <Setter Property="Background" Value="#2D2D34"/>
+            <Setter Property="Foreground" Value="{StaticResource AccentColor}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto" MinHeight="{TemplateBinding MinHeight}"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Border x:Name="TrackBackground" Grid.Row="1" Background="{TemplateBinding Background}" Height="4" CornerRadius="2" VerticalAlignment="Center"/>
+                            <Track x:Name="PART_Track" Grid.Row="1">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="Slider.DecreaseLarge" Background="{TemplateBinding Foreground}" BorderBrush="Transparent" Height="4">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="{TemplateBinding Background}" CornerRadius="2"/>
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="Slider.IncreaseLarge" Background="Transparent" BorderBrush="Transparent">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="Transparent"/>
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb x:Name="Thumb" Width="12" Height="12">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Ellipse Fill="{StaticResource AccentColor}" Stroke="White" StrokeThickness="1" Width="12" Height="12"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="20">
@@ -209,6 +257,7 @@
                                 <ColumnDefinition Width="Auto"/> <!-- Checkbox -->
                                 <ColumnDefinition Width="Auto"/> <!-- Device Icon -->
                                 <ColumnDefinition Width="*"/>    <!-- Details -->
+                                <ColumnDefinition Width="Auto"/> <!-- Delay Control -->
                             </Grid.ColumnDefinitions>
                             <!-- CheckBox bound to IsSelected -->
                             <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected}" Style="{StaticResource ModernCheckBox}" Checked="CheckBox_Changed" Unchecked="CheckBox_Changed"/>
@@ -216,9 +265,15 @@
                             <Path Grid.Column="1" Margin="12,0,12,0" Width="16" Height="16" Fill="{StaticResource TextSecondary}" Stretch="Uniform"
                                   Data="M3,9 v6 h4 l5,5 v-16 l-5,5 h-4 z M14.5,12 c0-1.77-1.02-3.29-2.5-4.03 v8.05 c1.48-.73 2.5-2.25 2.5-4.02 z M12,3.23 v2.06 c2.89,.86 5,3.54 5,6.71 s-2.11,5.85-5,6.71 v2.06 c4.01-.91 7-4.49 7-8.77 s-2.99-7.86-7-8.77 z"/>
                             <!-- Name and description -->
-                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,10,0">
+                                <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource TextSecondary}" Margin="0,2,0,0"/>
+                            </StackPanel>
+                            <!-- Delay slider control -->
+                            <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Slider Minimum="0" Maximum="1000" Value="{Binding DelayMs, UpdateSourceTrigger=PropertyChanged}" Width="75" Margin="0,0,5,0" VerticalAlignment="Center"
+                                        Style="{StaticResource ModernSlider}"/>
+                                <TextBlock Text="{Binding DelayMs, StringFormat={}{0}ms}" Width="45" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextAlignment="Right"/>
                             </StackPanel>
                         </Grid>
                     </DataTemplate>

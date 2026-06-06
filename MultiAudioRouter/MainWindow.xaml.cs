@@ -13,14 +13,38 @@ namespace MultiAudioRouter
     public partial class MainWindow : Window
     {
         // Device selection wrapper class
-        public class DeviceItem
+        public class DeviceItem : System.ComponentModel.INotifyPropertyChanged
         {
+            private int delayMs;
+
             public string Id { get; set; }
             public string Name { get; set; }
             public string StatusText { get; set; }
             public MMDevice Device { get; set; }
             public bool IsSelected { get; set; }
             public bool IsDefault { get; set; }
+
+            public int DelayMs
+            {
+                get => delayMs;
+                set
+                {
+                    if (delayMs != value)
+                    {
+                        delayMs = value;
+                        OnPropertyChanged(nameof(DelayMs));
+                        DelayChangedCallback?.Invoke(Id, delayMs);
+                    }
+                }
+            }
+
+            public Action<string, int> DelayChangedCallback { get; set; }
+
+            public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+            protected void OnPropertyChanged(string propertyName)
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+            }
         }
 
         // Active routing player structure
@@ -30,6 +54,7 @@ namespace MultiAudioRouter
             public WasapiOut Player { get; }
             public BufferedWaveProvider Buffer { get; }
             public IWaveProvider Resampler { get; }
+            public DelayWaveProvider DelayProvider { get; }
 
             public AudioRoute(MMDevice targetDevice, WaveFormat captureFormat)
             {
@@ -47,12 +72,12 @@ namespace MultiAudioRouter
                 // Check if capture sample rate matches target device mix sample rate exactly
                 // If they match, bypass resampling entirely and let WASAPI handle channels and bit depth
                 bool sampleRatesMatch = captureFormat.SampleRate == targetFormat.SampleRate;
+                IWaveProvider finalProvider;
 
                 if (sampleRatesMatch)
                 {
                     Resampler = null;
-                    Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 100);
-                    Player.Init(Buffer);
+                    finalProvider = Buffer;
                 }
                 else
                 {
@@ -62,12 +87,20 @@ namespace MultiAudioRouter
                         ResamplerQuality = 60
                     };
                     Resampler = resampler;
-
-                    Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 100);
-                    Player.Init(resampler);
+                    finalProvider = resampler;
                 }
 
+                // Wrap finalProvider with the delay line
+                DelayProvider = new DelayWaveProvider(finalProvider);
+
+                Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 100);
+                Player.Init(DelayProvider);
                 Player.Play();
+            }
+
+            public void SetDelay(int milliseconds)
+            {
+                DelayProvider?.SetDelay(milliseconds);
             }
 
             public void AddSamples(byte[] data, int offset, int count)
@@ -83,6 +116,83 @@ namespace MultiAudioRouter
                 if (Resampler is IDisposable d)
                 {
                     d.Dispose();
+                }
+            }
+        }
+
+        // Custom delay line WaveProvider using a circular buffer
+        private class DelayWaveProvider : IWaveProvider
+        {
+            private readonly IWaveProvider sourceProvider;
+            private readonly int bytesPerMillisecond;
+            private int delayBytes;
+            private byte[] delayBuffer;
+            private int writePos;
+            private int readPos;
+            private readonly object lockObject = new object();
+
+            public WaveFormat WaveFormat => sourceProvider.WaveFormat;
+
+            public DelayWaveProvider(IWaveProvider sourceProvider)
+            {
+                this.sourceProvider = sourceProvider;
+                this.bytesPerMillisecond = sourceProvider.WaveFormat.AverageBytesPerSecond / 1000;
+
+                // Circular buffer capacity for up to 1100 milliseconds of audio delay
+                int bufferCapacity = bytesPerMillisecond * 1100;
+                this.delayBuffer = new byte[bufferCapacity];
+            }
+
+            public void SetDelay(int milliseconds)
+            {
+                lock (lockObject)
+                {
+                    int targetDelayBytes = milliseconds * bytesPerMillisecond;
+                    if (targetDelayBytes != delayBytes)
+                    {
+                        // Shift read pointer to adjust delay
+                        int newReadPos = writePos - targetDelayBytes;
+                        while (newReadPos < 0)
+                        {
+                            newReadPos += delayBuffer.Length;
+                        }
+                        readPos = newReadPos % delayBuffer.Length;
+                        delayBytes = targetDelayBytes;
+                    }
+                }
+            }
+
+            public int Read(byte[] buffer, int offset, int count)
+            {
+                // Pull source data
+                byte[] tempBuffer = new byte[count];
+                int bytesRead = sourceProvider.Read(tempBuffer, 0, count);
+
+                lock (lockObject)
+                {
+                    // Copy new source data into circular delay line buffer
+                    for (int i = 0; i < bytesRead; i++)
+                    {
+                        delayBuffer[writePos] = tempBuffer[i];
+                        writePos = (writePos + 1) % delayBuffer.Length;
+                    }
+
+                    if (delayBytes == 0)
+                    {
+                        // 0ms delay: bypass circular reading
+                        Array.Copy(tempBuffer, 0, buffer, offset, bytesRead);
+                        readPos = writePos;
+                        return bytesRead;
+                    }
+
+                    // Copy delayed data from circular buffer
+                    for (int i = 0; i < bytesRead; i++)
+                    {
+                        buffer[offset + i] = delayBuffer[readPos];
+                        readPos = (readPos + 1) % delayBuffer.Length;
+                    }
+
+                    return bytesRead;
                 }
             }
         }
@@ -115,6 +225,7 @@ namespace MultiAudioRouter
         private void RefreshDevicesList()
         {
             var selectedIds = devicesList.Where(d => d.IsSelected).Select(d => d.Id).ToHashSet();
+            var previousDelays = devicesList.ToDictionary(d => d.Id, d => d.DelayMs);
             devicesList.Clear();
 
             try
@@ -133,15 +244,19 @@ namespace MultiAudioRouter
                             status += " (Default Out)";
                         }
 
-                        devicesList.Add(new DeviceItem
+                        int prevDelay = previousDelays.TryGetValue(device.ID, out int dVal) ? dVal : 0;
+                        var item = new DeviceItem
                         {
                             Id = device.ID,
                             Name = device.FriendlyName,
                             StatusText = status,
                             Device = device,
                             IsSelected = selectedIds.Contains(device.ID),
-                            IsDefault = isDefault
-                        });
+                            IsDefault = isDefault,
+                            DelayMs = prevDelay
+                        };
+                        item.DelayChangedCallback = OnDeviceDelayChanged;
+                        devicesList.Add(item);
                     }
                 }
             }
@@ -152,6 +267,17 @@ namespace MultiAudioRouter
 
             LstDevices.ItemsSource = null;
             LstDevices.ItemsSource = devicesList;
+        }
+
+        private void OnDeviceDelayChanged(string deviceId, int delayMs)
+        {
+            lock (routesLock)
+            {
+                if (activeRoutes.TryGetValue(deviceId, out var route))
+                {
+                    route.SetDelay(delayMs);
+                }
+            }
         }
 
         private void BtnRefresh_Click(object sender, RoutedEventArgs e)
@@ -221,6 +347,7 @@ namespace MultiAudioRouter
                         try
                         {
                             var route = new AudioRoute(item.Device, capture.WaveFormat);
+                            route.SetDelay(item.DelayMs);
                             activeRoutes[item.Id] = route;
                         }
                         catch (Exception ex)
@@ -381,6 +508,7 @@ namespace MultiAudioRouter
                 try
                 {
                     var route = new AudioRoute(item.Device, capture.WaveFormat);
+                    route.SetDelay(item.DelayMs);
                     activeRoutes[item.Id] = route;
                 }
                 catch (Exception ex)

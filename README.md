@@ -35,6 +35,10 @@ The core routing logic in [MainWindow.xaml.cs](file:///C:/Users/karti/Documents/
 5. **Live Route Changes**:
    - The checklist handles dynamic addition and removal of device routing endpoints *on-the-fly* without interrupting or restarting the capture recording session.
 
+6. **Latency Compensation (Per-Device Delay)**:
+   - Integrates a custom `DelayWaveProvider` featuring a circular buffer for each output route.
+   - Delay parameters can be updated in real-time via sliders (0 to 1000ms) in the ListBox items, adjusting the circular buffer read position instantly without interrupting playback.
+
 ## Verification Results
 
 The application builds cleanly under .NET 8.0:
