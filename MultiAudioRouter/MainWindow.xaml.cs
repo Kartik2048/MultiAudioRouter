@@ -35,25 +35,23 @@ namespace MultiAudioRouter
             {
                 TargetDevice = targetDevice;
 
-                // Create input buffer with 2 seconds capacity
+                // Create input buffer with 500ms capacity to prevent stuttering while avoiding infinite lag buildup
                 Buffer = new BufferedWaveProvider(captureFormat)
                 {
                     DiscardOnBufferOverflow = true,
-                    BufferLength = captureFormat.AverageBytesPerSecond * 2
+                    BufferDuration = TimeSpan.FromMilliseconds(500)
                 };
 
                 var targetFormat = targetDevice.AudioClient.MixFormat;
 
-                // Check if capture format matches target device mix format exactly
-                bool formatsMatch = captureFormat.SampleRate == targetFormat.SampleRate &&
-                                    captureFormat.Channels == targetFormat.Channels &&
-                                    captureFormat.BitsPerSample == targetFormat.BitsPerSample &&
-                                    captureFormat.Encoding == targetFormat.Encoding;
+                // Check if capture sample rate matches target device mix sample rate exactly
+                // If they match, bypass resampling entirely and let WASAPI handle channels and bit depth
+                bool sampleRatesMatch = captureFormat.SampleRate == targetFormat.SampleRate;
 
-                if (formatsMatch)
+                if (sampleRatesMatch)
                 {
                     Resampler = null;
-                    Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 50);
+                    Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 100);
                     Player.Init(Buffer);
                 }
                 else
@@ -65,7 +63,7 @@ namespace MultiAudioRouter
                     };
                     Resampler = resampler;
 
-                    Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 50);
+                    Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 100);
                     Player.Init(resampler);
                 }
 

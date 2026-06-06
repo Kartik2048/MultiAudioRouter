@@ -1,0 +1,40 @@
+## Ignore Visual Studio / MSBuild build output
+[Bb]in/
+[Oo]bj/
+[Log]/
+[Tt]est[Rr]esults/
+
+## Ignore user-specific files
+*.user
+*.userosscache
+*.sln.docstates
+
+## Ignore Visual Studio Cache and settings
+.vs/
+.vs*
+*.suo
+*.userprefs
+*.dbmdl
+*.lnk
+
+## Ignore JetBrains Rider and VS Code IDE directories
+.idea/
+.vscode/
+
+## Ignore NuGet Packages
+*.nupkg
+# The packages folder can be ignored if you are using PackageReference
+packages/
+
+## Ignore crash dumps and memory profiling
+*.kdmp
+*.hdmp
+*.mdmp
+*.prof
+
+## Local settings
+appsettings.Development.json
+*.local.json
+
+## Antigravity brain / metadata
+.gemini/

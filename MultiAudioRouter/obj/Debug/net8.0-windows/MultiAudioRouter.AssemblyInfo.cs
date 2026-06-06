@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MultiAudioRouter")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+79e41faa7e5c83187650bb5c45bb45a296326026")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fe878b066b2d0eec38b4ed470ee7eea62b58cae4")]
 [assembly: System.Reflection.AssemblyProductAttribute("MultiAudioRouter")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MultiAudioRouter")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

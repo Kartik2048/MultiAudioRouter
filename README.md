@@ -22,10 +22,11 @@ The core routing logic in [MainWindow.xaml.cs](file:///C:/Users/karti/Documents/
    - Replicates audio blocks to a list of active `AudioRoute` instances.
    - Each route writes the block to a `BufferedWaveProvider`.
    - To prevent latency build-up, `DiscardOnBufferOverflow = true` is set on the buffers.
+   - The buffer duration is set to 500 milliseconds (`BufferDuration = TimeSpan.FromMilliseconds(500)`) to balance low latency with stable, stutter-free playback.
 
 3. **Dynamic Resampling**:
-   - If a target device's native mix format matches the capture format, the buffer is fed directly.
-   - If they differ (e.g., mismatching sample rates like 44.1kHz vs 48kHz, or bit depths), the audio is processed through NAudio's `MediaFoundationResampler` to dynamically match the target device's mix format.
+   - If the target device's sample rate matches the captured sample rate, the resampler is bypassed entirely, and the buffer is fed directly to WASAPI, which implicitly handles bit depth and channel differences.
+   - If they differ (mismatching sample rates), the audio is dynamically resampled using `MediaFoundationResampler` to the target device's native format.
 
 4. **Safety & Loop Protection**:
    - Compares target device IDs with the default playback device ID.
