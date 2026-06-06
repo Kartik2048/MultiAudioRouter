@@ -35,9 +35,11 @@ The core routing logic in [MainWindow.xaml.cs](file:///C:/Users/karti/Documents/
 5. **Live Route Changes**:
    - The checklist handles dynamic addition and removal of device routing endpoints *on-the-fly* without interrupting or restarting the capture recording session.
 
-6. **Latency Compensation (Per-Device Delay)**:
-   - Integrates a custom `DelayWaveProvider` featuring a circular buffer for each output route.
-   - Delay parameters can be updated in real-time via sliders (0 to 1000ms) in the ListBox items, adjusting the circular buffer read position instantly without interrupting playback.
+6. **Latency Calibration & Compensation (Hybrid Sync)**:
+   - Coexists a manual 'Delay (ms)' slider with an automated acoustic calibration system.
+   - An "Auto-Sync" button plays a 50ms, 1kHz sine wave pulse to the default Master device, then to the selected Routed device.
+   - Using low-latency microphone feedback (`WaveInEvent`), the application measures the time delay until a volume spike threshold is crossed, showing the measured result on the UI.
+   - Calculates the absolute latency delta between the Master and Routed devices, and automatically updates the manual delay slider for the faster device to offset the latency, leaving the manual sliders as the final source of truth.
 
 ## Verification Results
 
