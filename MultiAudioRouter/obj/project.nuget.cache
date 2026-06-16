@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "ARN1fROp2xw=",
+  "dgSpecHash": "BB9B9RGPmIc=",
   "success": true,
   "projectFilePath": "C:\\Users\\karti\\Documents\\MultiAudioRouter\\MultiAudioRouter\\MultiAudioRouter.csproj",
   "expectedPackageFiles": [
@@ -10,7 +10,10 @@
     "C:\\Users\\karti\\.nuget\\packages\\naudio.midi\\2.3.0\\naudio.midi.2.3.0.nupkg.sha512",
     "C:\\Users\\karti\\.nuget\\packages\\naudio.wasapi\\2.3.0\\naudio.wasapi.2.3.0.nupkg.sha512",
     "C:\\Users\\karti\\.nuget\\packages\\naudio.winforms\\2.3.0\\naudio.winforms.2.3.0.nupkg.sha512",
-    "C:\\Users\\karti\\.nuget\\packages\\naudio.winmm\\2.3.0\\naudio.winmm.2.3.0.nupkg.sha512"
+    "C:\\Users\\karti\\.nuget\\packages\\naudio.winmm\\2.3.0\\naudio.winmm.2.3.0.nupkg.sha512",
+    "C:\\Users\\karti\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\8.0.27\\microsoft.netcore.app.runtime.win-x64.8.0.27.nupkg.sha512",
+    "C:\\Users\\karti\\.nuget\\packages\\microsoft.windowsdesktop.app.runtime.win-x64\\8.0.27\\microsoft.windowsdesktop.app.runtime.win-x64.8.0.27.nupkg.sha512",
+    "C:\\Users\\karti\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\8.0.27\\microsoft.aspnetcore.app.runtime.win-x64.8.0.27.nupkg.sha512"
   ],
   "logs": []
 }

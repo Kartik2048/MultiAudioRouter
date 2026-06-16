@@ -1,0 +1,153 @@
+<Window x:Class="MultiAudioRouter.CalibrationSetupView"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Acoustic Calibration Setup" Height="410" Width="440"
+        Background="#121214" Foreground="#F3F4F6"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        ShowInTaskbar="False" BorderBrush="#2D2D34" BorderThickness="1"
+        FontFamily="Segoe UI, Arial">
+
+    <Window.Resources>
+        <!-- Color Definitions -->
+        <SolidColorBrush x:Key="BgPrimary" Color="#121214"/>
+        <SolidColorBrush x:Key="BgSecondary" Color="#1E1E24"/>
+        <SolidColorBrush x:Key="BorderColor" Color="#2D2D34"/>
+        <SolidColorBrush x:Key="AccentColor" Color="#6366F1"/>
+        <SolidColorBrush x:Key="AccentHoverColor" Color="#4F46E5"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#F3F4F6"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#9CA3AF"/>
+
+        <!-- ComboBoxItem Style to make Dropdown items dark -->
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#1E1E24"/>
+            <Setter Property="Foreground" Value="#F3F4F6"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#6366F1"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#312E81"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- ComboBox Style -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#1E1E24"/>
+            <Setter Property="Foreground" Value="#F3F4F6"/>
+            <Setter Property="BorderBrush" Value="#2D2D34"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        </Style>
+
+        <!-- Button Style -->
+        <Style x:Key="DarkButton" TargetType="Button">
+            <Setter Property="Background" Value="#2D2D34"/>
+            <Setter Property="Foreground" Value="#F3F4F6"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Border" Background="{TemplateBinding Background}" CornerRadius="6" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Border" Property="Opacity" Value="0.8"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Border" Property="Background" Value="#1A1A22"/>
+                                <Setter TargetName="Border" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="AccentButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource AccentColor}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Border" Background="{TemplateBinding Background}" CornerRadius="6" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Border" Property="Opacity" Value="0.8"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Border" Property="Background" Value="#2A2A35"/>
+                                <Setter TargetName="Border" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/> <!-- Title -->
+            <RowDefinition Height="*"/>    <!-- Controls -->
+            <RowDefinition Height="Auto"/> <!-- Status -->
+            <RowDefinition Height="Auto"/> <!-- Actions -->
+        </Grid.RowDefinitions>
+
+        <!-- Title -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,20">
+            <TextBlock Text="Acoustic Calibration Setup" FontSize="18" FontWeight="Bold" Foreground="{StaticResource AccentColor}"/>
+            <TextBlock Text="Synchronize speaker outputs using a microphone." FontSize="11" Foreground="{StaticResource TextSecondary}" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- Controls -->
+        <StackPanel Grid.Row="1" Orientation="Vertical">
+            <!-- Microphone Selector -->
+            <TextBlock Text="Select Measurement Microphone" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,6"/>
+            <ComboBox x:Name="CboMicrophone" Height="34" Margin="0,0,0,16"/>
+
+            <!-- Reference Speaker Selector -->
+            <TextBlock Text="Select Reference Speaker (Zero Delay)" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,6"/>
+            <ComboBox x:Name="CboReferenceSpeaker" Height="34" Margin="0,0,0,16"/>
+
+            <!-- Target Speaker Selector -->
+            <TextBlock Text="Select Target Speaker to Sync" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextSecondary}" Margin="0,0,0,6"/>
+            <ComboBox x:Name="CboTargetSpeaker" Height="34" Margin="0,0,0,10"/>
+        </StackPanel>
+
+        <!-- Status -->
+        <Border Grid.Row="2" Background="#1E1E24" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,20">
+            <TextBlock x:Name="TxtStatus" Text="Ready to calibrate..." FontSize="12" Foreground="{StaticResource TextPrimary}" HorizontalAlignment="Center" TextWrapping="Wrap"/>
+        </Border>
+
+        <!-- Actions -->
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Button Grid.Column="0" x:Name="BtnStart" Content="Start Calibration" Style="{StaticResource AccentButton}" Click="BtnStart_Click"/>
+            <Button Grid.Column="2" x:Name="BtnCancel" Content="Cancel" Style="{StaticResource DarkButton}" Click="BtnCancel_Click"/>
+        </Grid>
+    </Grid>
+</Window>

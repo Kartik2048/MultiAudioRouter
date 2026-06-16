@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -8,6 +9,7 @@ using System.Windows.Threading;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using NAudio.Dsp;
 
 namespace MultiAudioRouter
 {
@@ -18,6 +20,13 @@ namespace MultiAudioRouter
         RightOnly
     }
 
+    public enum CrossoverMode
+    {
+        FullRange,
+        LowPass,
+        HighPass
+    }
+
     public partial class MainWindow : Window
     {
         // Device selection wrapper class
@@ -26,6 +35,7 @@ namespace MultiAudioRouter
             private int delayMs;
             private int measuredLatencyMs;
             private ChannelIsolationMode isolationMode = ChannelIsolationMode.Stereo;
+            private CrossoverMode crossoverMode = CrossoverMode.FullRange;
 
             public string Id { get; set; }
             public string Name { get; set; }
@@ -76,6 +86,20 @@ namespace MultiAudioRouter
                 }
             }
 
+            public CrossoverMode CrossoverMode
+            {
+                get => crossoverMode;
+                set
+                {
+                    if (crossoverMode != value)
+                    {
+                        crossoverMode = value;
+                        OnPropertyChanged(nameof(CrossoverMode));
+                        CrossoverModeChangedCallback?.Invoke(Id, crossoverMode);
+                    }
+                }
+            }
+
             public float Volume
             {
                 get
@@ -115,6 +139,7 @@ namespace MultiAudioRouter
 
             public Action<string, int> DelayChangedCallback { get; set; }
             public Action<string, ChannelIsolationMode> IsolationModeChangedCallback { get; set; }
+            public Action<string, CrossoverMode> CrossoverModeChangedCallback { get; set; }
 
             public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
             protected void OnPropertyChanged(string propertyName)
@@ -129,11 +154,11 @@ namespace MultiAudioRouter
             public MMDevice TargetDevice { get; }
             public WasapiOut Player { get; }
             public BufferedWaveProvider Buffer { get; }
-            public IWaveProvider Resampler { get; }
-            public DelayWaveProvider DelayProvider { get; }
+            public ISampleProvider Resampler { get; }
+            public UnifiedDspProvider DspProvider { get; }
             public ChannelMatrixProvider MatrixProvider { get; }
 
-            public AudioRoute(MMDevice targetDevice, WaveFormat captureFormat, ChannelIsolationMode initialIsolationMode)
+            public AudioRoute(MMDevice targetDevice, WaveFormat captureFormat, ChannelIsolationMode initialIsolationMode, CrossoverMode initialCrossoverMode, float initialCrossoverFrequency, double initialDelayMs = 0)
             {
                 TargetDevice = targetDevice;
 
@@ -146,48 +171,46 @@ namespace MultiAudioRouter
 
                 var targetFormat = targetDevice.AudioClient.MixFormat;
 
-                // Check if capture sample rate matches target device mix sample rate exactly
-                // If they match, bypass resampling entirely and let WASAPI handle channels and bit depth
-                bool sampleRatesMatch = captureFormat.SampleRate == targetFormat.SampleRate;
-                IWaveProvider finalProvider;
+                // Convert Buffer (IWaveProvider) to ISampleProvider
+                ISampleProvider sampleSource = Buffer.ToSampleProvider();
 
-                if (sampleRatesMatch)
+                // Create UnifiedDspProvider running at capture format sample rate (48000Hz)
+                DspProvider = new UnifiedDspProvider(sampleSource, initialCrossoverMode, initialCrossoverFrequency, initialDelayMs);
+
+                // Wrap DspProvider in ChannelMatrixProvider (ISampleProvider)
+                MatrixProvider = new ChannelMatrixProvider(DspProvider);
+                MatrixProvider.SetMode(initialIsolationMode);
+
+                ISampleProvider finalSampleSource = MatrixProvider;
+
+                // Dynamically resample using WdlResamplingSampleProvider if sample rates mismatch.
+                // Placing the resampler at the very end of the routing pipeline keeps the DSP pipeline running at the
+                // uniform capture rate of 48000Hz, resolving delay sync rounding/underrun bugs.
+                if (captureFormat.SampleRate != targetFormat.SampleRate)
                 {
-                    Resampler = null;
-                    finalProvider = Buffer;
+                    var resampler = new WdlResamplingSampleProvider(finalSampleSource, targetFormat.SampleRate);
+                    Resampler = resampler;
+                    finalSampleSource = resampler;
                 }
                 else
                 {
-                    // Dynamically resample to target device's native mix format
-                    var resampler = new MediaFoundationResampler(Buffer, targetFormat)
-                    {
-                        ResamplerQuality = 60
-                    };
-                    Resampler = resampler;
-                    finalProvider = resampler;
+                    Resampler = null;
                 }
 
-                // Wrap finalProvider with the delay line
-                DelayProvider = new DelayWaveProvider(finalProvider);
-
-                // Convert DelayProvider (IWaveProvider) into ISampleProvider
-                var sampleSource = new WaveToSampleProvider(DelayProvider);
-
-                // Wrap sampleSource in ChannelMatrixProvider (ISampleProvider)
-                MatrixProvider = new ChannelMatrixProvider(sampleSource);
-                MatrixProvider.SetMode(initialIsolationMode);
-
                 // Convert back to IWaveProvider for WasapiOut
-                var finalWaveProvider = new SampleToWaveProvider(MatrixProvider);
+                var finalWaveProvider = new SampleToWaveProvider(finalSampleSource);
 
-                Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 100);
+                Player = new WasapiOut(targetDevice, AudioClientShareMode.Shared, true, 30);
                 Player.Init(finalWaveProvider);
                 Player.Play();
             }
 
-            public void SetDelay(int milliseconds)
+            public void SetDelay(double milliseconds)
             {
-                DelayProvider?.SetDelay(milliseconds);
+                if (DspProvider != null)
+                {
+                    DspProvider.DelayMs = milliseconds;
+                }
             }
 
             public void SetIsolationMode(ChannelIsolationMode mode)
@@ -195,9 +218,39 @@ namespace MultiAudioRouter
                 MatrixProvider?.SetMode(mode);
             }
 
+            public void SetCrossover(CrossoverMode mode, float frequency)
+            {
+                DspProvider?.SetCrossover(mode, frequency);
+            }
+
             public void AddSamples(byte[] data, int offset, int count)
             {
                 Buffer.AddSamples(data, offset, count);
+
+                // Prevent buffer buildup to keep routing latency low and stable.
+                // Since the Player buffer duration is 30ms, we want to maintain around 60-100ms in the buffer.
+                // If the buffered duration exceeds 100ms, we discard the oldest samples to bring it back to 60ms.
+                int bytesPerSecond = Buffer.WaveFormat.AverageBytesPerSecond;
+                int maxBufferedBytes = (int)(0.100 * bytesPerSecond); // 100ms threshold
+                int targetBufferedBytes = (int)(0.060 * bytesPerSecond); // 60ms target
+
+                // Ensure block alignment
+                int blockAlign = Buffer.WaveFormat.BlockAlign;
+                maxBufferedBytes = (maxBufferedBytes / blockAlign) * blockAlign;
+                targetBufferedBytes = (targetBufferedBytes / blockAlign) * blockAlign;
+
+                if (Buffer.BufferedBytes > maxBufferedBytes)
+                {
+                    int bytesToDiscard = Buffer.BufferedBytes - targetBufferedBytes;
+                    bytesToDiscard = (bytesToDiscard / blockAlign) * blockAlign;
+
+                    if (bytesToDiscard > 0)
+                    {
+                        byte[] temp = new byte[bytesToDiscard];
+                        Buffer.Read(temp, 0, bytesToDiscard);
+                        System.Console.WriteLine($"[Routing Latency Control] Discarded {bytesToDiscard} bytes ({bytesToDiscard * 1000.0 / bytesPerSecond:F1}ms) to catch up from {Buffer.BufferedBytes * 1000.0 / bytesPerSecond:F1}ms.");
+                    }
+                }
             }
 
             public void Dispose()
@@ -212,79 +265,75 @@ namespace MultiAudioRouter
             }
         }
 
-        // Custom delay line WaveProvider using a circular buffer
-        private class DelayWaveProvider : IWaveProvider
+        // Custom ISampleProvider that feeds background keep-alive noise and sweeps a chirp when triggered.
+        // It triggers a callback when the first chirp sample is read.
+        private class KeepAliveCalibrationProvider : ISampleProvider
         {
-            private readonly IWaveProvider sourceProvider;
-            private readonly int bytesPerMillisecond;
-            private int delayBytes;
-            private byte[] delayBuffer;
-            private int writePos;
-            private int readPos;
+            private readonly WaveFormat format;
+            private readonly float[] chirpSamples;
+            private int chirpSampleIndex = 0;
+            private bool chirpTriggered = false;
             private readonly object lockObject = new object();
+            private Action onChirpStart;
+            private readonly Random random = new Random();
 
-            public WaveFormat WaveFormat => sourceProvider.WaveFormat;
+            public WaveFormat WaveFormat => format;
 
-            public DelayWaveProvider(IWaveProvider sourceProvider)
+            public KeepAliveCalibrationProvider(WaveFormat format, float[] chirpSamples)
             {
-                this.sourceProvider = sourceProvider;
-                this.bytesPerMillisecond = sourceProvider.WaveFormat.AverageBytesPerSecond / 1000;
-
-                // Circular buffer capacity for up to 1100 milliseconds of audio delay
-                int bufferCapacity = bytesPerMillisecond * 1100;
-                this.delayBuffer = new byte[bufferCapacity];
+                this.format = format;
+                this.chirpSamples = chirpSamples;
             }
 
-            public void SetDelay(int milliseconds)
+            public void Trigger(Action onChirpStartCallback)
             {
                 lock (lockObject)
                 {
-                    int targetDelayBytes = milliseconds * bytesPerMillisecond;
-                    if (targetDelayBytes != delayBytes)
-                    {
-                        // Shift read pointer to adjust delay
-                        int newReadPos = writePos - targetDelayBytes;
-                        while (newReadPos < 0)
-                        {
-                            newReadPos += delayBuffer.Length;
-                        }
-                        readPos = newReadPos % delayBuffer.Length;
-                        delayBytes = targetDelayBytes;
-                    }
+                    this.onChirpStart = onChirpStartCallback;
+                    this.chirpTriggered = true;
+                    this.chirpSampleIndex = 0;
                 }
             }
 
-            public int Read(byte[] buffer, int offset, int count)
+            public int Read(float[] buffer, int offset, int count)
             {
-                // Pull source data
-                byte[] tempBuffer = new byte[count];
-                int bytesRead = sourceProvider.Read(tempBuffer, 0, count);
-
                 lock (lockObject)
                 {
-                    // Copy new source data into circular delay line buffer
-                    for (int i = 0; i < bytesRead; i++)
+                    int channels = format.Channels;
+                    for (int i = 0; i < count; i += channels)
                     {
-                        delayBuffer[writePos] = tempBuffer[i];
-                        writePos = (writePos + 1) % delayBuffer.Length;
-                    }
+                        // Generate keep-alive signal (White Noise at 0.01 amplitude)
+                        float noise = (float)(random.NextDouble() * 2.0 - 1.0) * 0.01f;
 
-                    if (delayBytes == 0)
-                    {
-                        // 0ms delay: bypass circular reading
-                        Array.Copy(tempBuffer, 0, buffer, offset, bytesRead);
-                        readPos = writePos;
-                        return bytesRead;
-                    }
+                        float chirpVal = 0f;
+                        if (chirpTriggered)
+                        {
+                            if (chirpSampleIndex == 0 && onChirpStart != null)
+                            {
+                                onChirpStart();
+                                onChirpStart = null;
+                            }
 
-                    // Copy delayed data from circular buffer
-                    for (int i = 0; i < bytesRead; i++)
-                    {
-                        buffer[offset + i] = delayBuffer[readPos];
-                        readPos = (readPos + 1) % delayBuffer.Length;
-                    }
+                            if (chirpSampleIndex < chirpSamples.Length)
+                            {
+                                chirpVal = chirpSamples[chirpSampleIndex];
+                                chirpSampleIndex++;
+                            }
+                            else
+                            {
+                                chirpTriggered = false;
+                            }
+                        }
 
-                    return bytesRead;
+                        for (int c = 0; c < channels; c++)
+                        {
+                            if (offset + i + c < buffer.Length)
+                            {
+                                buffer[offset + i + c] = noise + chirpVal;
+                            }
+                        }
+                    }
+                    return count;
                 }
             }
         }
@@ -333,6 +382,190 @@ namespace MultiAudioRouter
             }
         }
 
+        // Custom ISampleProvider that combines crossover filtering and simple queue-based delay
+        public class UnifiedDspProvider : ISampleProvider
+        {
+            private readonly ISampleProvider _sourceProvider;
+            private readonly BiQuadFilter _leftBiquad;
+            private readonly BiQuadFilter _rightBiquad;
+            private readonly Queue<float> _delayQueue = new Queue<float>();
+            private readonly object _lockObject = new object();
+
+            private CrossoverMode _currentMode;
+            private float _currentFrequency;
+            private bool _coefficientsNeedUpdate = false;
+            private double _delayMs;
+
+            public WaveFormat WaveFormat => _sourceProvider.WaveFormat;
+
+            public double DelayMs
+            {
+                get
+                {
+                    lock (_lockObject)
+                    {
+                        return _delayMs;
+                    }
+                }
+                set
+                {
+                    lock (_lockObject)
+                    {
+                        _delayMs = value;
+                    }
+                }
+            }
+
+            public UnifiedDspProvider(ISampleProvider sourceProvider, CrossoverMode initialMode, float initialFrequency, double initialDelayMs)
+            {
+                _sourceProvider = sourceProvider;
+                _currentMode = initialMode;
+                _currentFrequency = initialFrequency;
+                _delayMs = initialDelayMs;
+
+                // Instantiate two separate BiQuadFilter objects
+                _leftBiquad = BiQuadFilter.LowPassFilter(WaveFormat.SampleRate, initialFrequency, 0.707f);
+                _rightBiquad = BiQuadFilter.LowPassFilter(WaveFormat.SampleRate, initialFrequency, 0.707f);
+
+                UpdateFilterCoefficients(initialMode, initialFrequency);
+                LogDebug($"UnifiedDspProvider created: sampleRate={WaveFormat.SampleRate}, channels={WaveFormat.Channels}, mode={initialMode}, freq={initialFrequency}, delay={initialDelayMs}ms");
+            }
+
+            public void SetCrossover(CrossoverMode mode, float frequency)
+            {
+                lock (_lockObject)
+                {
+                    _currentMode = mode;
+                    _currentFrequency = frequency;
+                    _coefficientsNeedUpdate = true;
+                    LogDebug($"UnifiedDspProvider.SetCrossover: mode={mode}, freq={frequency}");
+                }
+            }
+
+            private void UpdateFilterCoefficients(CrossoverMode mode, float frequency)
+            {
+                // Clamp cutoff frequency to valid ranges: keep it below Nyquist limit and above sub-audible frequencies
+                float cutoff = Math.Clamp(frequency, 20f, WaveFormat.SampleRate / 2.01f);
+
+                if (mode == CrossoverMode.LowPass)
+                {
+                    _leftBiquad.SetLowPassFilter(WaveFormat.SampleRate, cutoff, 0.707f);
+                    _rightBiquad.SetLowPassFilter(WaveFormat.SampleRate, cutoff, 0.707f);
+                    LogDebug($"UpdateFilterCoefficients LowPass: sampleRate={WaveFormat.SampleRate}, cutoff={cutoff}");
+                }
+                else if (mode == CrossoverMode.HighPass)
+                {
+                    _leftBiquad.SetHighPassFilter(WaveFormat.SampleRate, cutoff, 0.707f);
+                    _rightBiquad.SetHighPassFilter(WaveFormat.SampleRate, cutoff, 0.707f);
+                    LogDebug($"UpdateFilterCoefficients HighPass: sampleRate={WaveFormat.SampleRate}, cutoff={cutoff}");
+                }
+            }
+
+            public int Read(float[] buffer, int offset, int count)
+            {
+                int samplesRead = _sourceProvider.Read(buffer, offset, count);
+
+                CrossoverMode modeToUse;
+                double delayMsToUse;
+
+                lock (_lockObject)
+                {
+                    if (_coefficientsNeedUpdate)
+                    {
+                        UpdateFilterCoefficients(_currentMode, _currentFrequency);
+                        _coefficientsNeedUpdate = false;
+                    }
+                    modeToUse = _currentMode;
+                    delayMsToUse = _delayMs;
+                }
+
+                int channels = WaveFormat.Channels;
+                int targetDelaySamples = (int)((delayMsToUse / 1000.0) * WaveFormat.SampleRate * channels);
+                if (channels == 2 && targetDelaySamples % 2 != 0)
+                {
+                    targetDelaySamples++;
+                }
+
+                for (int n = 0; n < samplesRead; n += 2)
+                {
+                    if (n + 1 < samplesRead)
+                    {
+                        if (modeToUse == CrossoverMode.LowPass || modeToUse == CrossoverMode.HighPass)
+                        {
+                            buffer[offset + n] = _leftBiquad.Transform(buffer[offset + n]);
+                            buffer[offset + n + 1] = _rightBiquad.Transform(buffer[offset + n + 1]);
+                        }
+
+                        _delayQueue.Enqueue(buffer[offset + n]);
+                        _delayQueue.Enqueue(buffer[offset + n + 1]);
+
+                        // Shrinking delay check: before writing/dequeuing, discard excess samples to drop delay instantly
+                        while (_delayQueue.Count > targetDelaySamples + 2)
+                        {
+                            _delayQueue.Dequeue();
+                        }
+
+                        if (_delayQueue.Count > targetDelaySamples)
+                        {
+                            buffer[offset + n] = _delayQueue.Dequeue();
+                        }
+                        else
+                        {
+                            buffer[offset + n] = 0.0f;
+                        }
+
+                        if (_delayQueue.Count > targetDelaySamples)
+                        {
+                            buffer[offset + n + 1] = _delayQueue.Dequeue();
+                        }
+                        else
+                        {
+                            buffer[offset + n + 1] = 0.0f;
+                        }
+                    }
+                    else
+                    {
+                        // Handle single remaining sample (in case samplesRead is odd, though rare for stereo)
+                        if (modeToUse == CrossoverMode.LowPass || modeToUse == CrossoverMode.HighPass)
+                        {
+                            buffer[offset + n] = _leftBiquad.Transform(buffer[offset + n]);
+                        }
+
+                        _delayQueue.Enqueue(buffer[offset + n]);
+
+                        while (_delayQueue.Count > targetDelaySamples + 1)
+                        {
+                            _delayQueue.Dequeue();
+                        }
+
+                        if (_delayQueue.Count > targetDelaySamples)
+                        {
+                            buffer[offset + n] = _delayQueue.Dequeue();
+                        }
+                        else
+                        {
+                            buffer[offset + n] = 0.0f;
+                        }
+                    }
+                }
+
+                return samplesRead;
+            }
+        }
+
+        // Acoustic calibration DependencyProperty & fields
+        public static readonly DependencyProperty DelaySlidersVisibilityProperty =
+            DependencyProperty.Register("DelaySlidersVisibility", typeof(Visibility), typeof(MainWindow), new PropertyMetadata(Visibility.Visible));
+
+        public Visibility DelaySlidersVisibility
+        {
+            get => (Visibility)GetValue(DelaySlidersVisibilityProperty);
+            set => SetValue(DelaySlidersVisibilityProperty, value);
+        }
+
+        public List<DeviceItem> DevicesList => devicesList;
+        public bool IsRoutingState => isRouting;
+
         private List<DeviceItem> devicesList = new List<DeviceItem>();
         private WasapiLoopbackCapture capture;
         private readonly Dictionary<string, AudioRoute> activeRoutes = new Dictionary<string, AudioRoute>();
@@ -341,6 +574,13 @@ namespace MultiAudioRouter
 
         private float currentPeakVolume = 0f;
         private readonly DispatcherTimer uiUpdateTimer;
+
+        // Acoustic calibration error constants
+        private const double MEASUREMENT_ERROR_GENERIC = -1.0;
+        private const double MEASUREMENT_ERROR_LOW_SIGNAL = -2.0;
+        private const double MEASUREMENT_ERROR_NEGATIVE_LATENCY = -3.0;
+        private const double MEASUREMENT_ERROR_TIMEOUT = -4.0;
+        private const int ROUTING_OVERHEAD_MS = 160;
 
         public MainWindow()
         {
@@ -363,6 +603,8 @@ namespace MultiAudioRouter
             var selectedIds = devicesList.Where(d => d.IsSelected).Select(d => d.Id).ToHashSet();
             var previousDelays = devicesList.ToDictionary(d => d.Id, d => d.DelayMs);
             var previousIsolationModes = devicesList.ToDictionary(d => d.Id, d => d.IsolationMode);
+            var previousCrossoverModes = devicesList.ToDictionary(d => d.Id, d => d.CrossoverMode);
+            var previousMeasuredLatencies = devicesList.ToDictionary(d => d.Id, d => d.MeasuredLatencyMs);
             devicesList.Clear();
 
             try
@@ -383,6 +625,8 @@ namespace MultiAudioRouter
 
                         int prevDelay = previousDelays.TryGetValue(device.ID, out int dVal) ? dVal : 0;
                         ChannelIsolationMode prevMode = previousIsolationModes.TryGetValue(device.ID, out ChannelIsolationMode mVal) ? mVal : ChannelIsolationMode.Stereo;
+                        CrossoverMode prevCrossover = previousCrossoverModes.TryGetValue(device.ID, out CrossoverMode cVal) ? cVal : CrossoverMode.FullRange;
+                        int prevMeasured = previousMeasuredLatencies.TryGetValue(device.ID, out int lVal) ? lVal : 0;
 
                         var item = new DeviceItem
                         {
@@ -393,10 +637,13 @@ namespace MultiAudioRouter
                             IsSelected = selectedIds.Contains(device.ID),
                             IsDefault = isDefault,
                             DelayMs = prevDelay,
-                            IsolationMode = prevMode
+                            IsolationMode = prevMode,
+                            CrossoverMode = prevCrossover,
+                            MeasuredLatencyMs = prevMeasured
                         };
                         item.DelayChangedCallback = OnDeviceDelayChanged;
                         item.IsolationModeChangedCallback = OnDeviceIsolationModeChanged;
+                        item.CrossoverModeChangedCallback = OnDeviceCrossoverModeChanged;
                         devicesList.Add(item);
                     }
                 }
@@ -422,7 +669,7 @@ namespace MultiAudioRouter
                 }
             }
         }
-
+ 
         private void OnDeviceIsolationModeChanged(string deviceId, ChannelIsolationMode mode)
         {
             string devName = devicesList.FirstOrDefault(d => d.Id == deviceId)?.Name ?? deviceId;
@@ -436,324 +683,681 @@ namespace MultiAudioRouter
             }
         }
 
-        private byte[] GeneratePingSamples(WaveFormat format, out int sampleCount)
+        private static readonly object logLock = new object();
+        public static void LogDebug(string message)
         {
-            int sampleRate = format.SampleRate;
-            int channels = format.Channels;
-            double durationSeconds = 0.050; // 50ms
-            sampleCount = (int)(sampleRate * durationSeconds);
-            int totalBytes = sampleCount * channels * (format.BitsPerSample / 8);
-            byte[] rawData = new byte[totalBytes];
+            try
+            {
+                lock (logLock)
+                {
+                    System.IO.File.AppendAllText(@"c:\Users\karti\Documents\MultiAudioRouter\crossover_debug.log", 
+                        $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
+                }
+            }
+            catch { }
+        }
 
-            double frequency = 1000.0; // 1kHz
-            float amplitude = 0.8f;
-            int bytesPerSample = format.BitsPerSample / 8;
+        private float globalCrossoverFrequency = 80f;
+
+        private void OnDeviceCrossoverModeChanged(string deviceId, CrossoverMode mode)
+        {
+            string devName = devicesList.FirstOrDefault(d => d.Id == deviceId)?.Name ?? deviceId;
+            string msg = $"[Crossover Network] Set crossover mode for '{devName}' to {mode}";
+            System.Console.WriteLine(msg);
+            LogDebug(msg);
+            lock (routesLock)
+            {
+                if (activeRoutes.TryGetValue(deviceId, out var route))
+                {
+                    route.SetCrossover(mode, globalCrossoverFrequency);
+                }
+                else
+                {
+                    LogDebug($"OnDeviceCrossoverModeChanged: activeRoutes does not contain route for {deviceId}");
+                }
+            }
+        }
+
+        private void CrossoverComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (sender is ComboBox cb && cb.DataContext is DeviceItem item && cb.SelectedValue is CrossoverMode mode)
+            {
+                item.CrossoverMode = mode;
+            }
+        }
+
+        private void IsolationComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (sender is ComboBox cb && cb.DataContext is DeviceItem item && cb.SelectedValue is ChannelIsolationMode mode)
+            {
+                item.IsolationMode = mode;
+            }
+        }
+
+        private void SldGlobalCrossover_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            globalCrossoverFrequency = (float)e.NewValue;
+            if (devicesList == null) return;
+ 
+            string msg = $"[Crossover Network] Global Crossover frequency updated to {globalCrossoverFrequency:F0} Hz";
+            System.Console.WriteLine(msg);
+            LogDebug(msg);
+ 
+            lock (routesLock)
+            {
+                foreach (var kvp in activeRoutes)
+                {
+                    string deviceId = kvp.Key;
+                    var route = kvp.Value;
+                    var deviceItem = devicesList.FirstOrDefault(d => d.Id == deviceId);
+                    if (deviceItem != null)
+                    {
+                        route.SetCrossover(deviceItem.CrossoverMode, globalCrossoverFrequency);
+                    }
+                }
+            }
+        }
+
+        private float[] GenerateLogChirp(int sampleRate, double durationSeconds, double f0, double f1)
+        {
+            int sampleCount = (int)(sampleRate * durationSeconds);
+            float[] chirp = new float[sampleCount];
+            double logFreqRatio = Math.Log(f1 / f0);
 
             for (int i = 0; i < sampleCount; i++)
             {
-                double time = (double)i / sampleRate;
-                float value = (float)(amplitude * Math.Sin(2 * Math.PI * frequency * time));
+                double t = (double)i / sampleRate;
+                double phase = 2.0 * Math.PI * f0 * (durationSeconds / logFreqRatio) * (Math.Exp(t * logFreqRatio / durationSeconds) - 1.0);
+                float value = (float)Math.Sin(phase);
 
                 // Apply a 5ms linear fade envelope to prevent click artifacts
-                double fadeDuration = 0.005; // 5ms
-                if (time < fadeDuration)
+                double fadeDuration = 0.005;
+                if (t < fadeDuration)
                 {
-                    value *= (float)(time / fadeDuration);
+                    value *= (float)(t / fadeDuration);
                 }
-                else if (time > durationSeconds - fadeDuration)
+                else if (t > durationSeconds - fadeDuration)
                 {
-                    value *= (float)((durationSeconds - time) / fadeDuration);
+                    value *= (float)((durationSeconds - t) / fadeDuration);
                 }
 
-                // Write to all channels
+                chirp[i] = value * 0.8f; // 80% amplitude
+            }
+            return chirp;
+        }
+
+        private bool IsFormatFloat(WaveFormat format)
+        {
+            if (format.Encoding == WaveFormatEncoding.IeeeFloat) return true;
+            if (format is WaveFormatExtensible ext)
+            {
+                if (ext.SubFormat == new Guid("00000003-0000-0010-8000-00aa00389b71"))
+                {
+                    return true;
+                }
+            }
+            if (format.BitsPerSample == 32 && format.Encoding == WaveFormatEncoding.Extensible)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        private byte[] ConvertFloatToActiveWaveFormat(float[] floatSamples, WaveFormat format)
+        {
+            int channels = format.Channels;
+            int totalBytes = floatSamples.Length * channels * (format.BitsPerSample / 8);
+            byte[] bytes = new byte[totalBytes];
+            int bytesPerSample = format.BitsPerSample / 8;
+            bool isFloat = IsFormatFloat(format);
+
+            for (int i = 0; i < floatSamples.Length; i++)
+            {
+                float val = floatSamples[i];
+
                 for (int channel = 0; channel < channels; channel++)
                 {
                     int offset = (i * channels + channel) * bytesPerSample;
-                    if (format.BitsPerSample == 32 && format.Encoding == WaveFormatEncoding.IeeeFloat)
+                    if (format.BitsPerSample == 32 && isFloat)
                     {
-                        byte[] bytes = BitConverter.GetBytes(value);
-                        Array.Copy(bytes, 0, rawData, offset, 4);
+                        byte[] sampleBytes = BitConverter.GetBytes(val);
+                        Array.Copy(sampleBytes, 0, bytes, offset, 4);
                     }
                     else if (format.BitsPerSample == 16)
                     {
-                        short shortVal = (short)(value * 32767);
-                        byte[] bytes = BitConverter.GetBytes(shortVal);
-                        Array.Copy(bytes, 0, rawData, offset, 2);
+                        short shortVal = (short)(val * 32767f);
+                        byte[] sampleBytes = BitConverter.GetBytes(shortVal);
+                        Array.Copy(sampleBytes, 0, bytes, offset, 2);
                     }
                     else if (format.BitsPerSample == 24)
                     {
-                        int intVal = (int)(value * 8388607);
-                        byte[] bytes = BitConverter.GetBytes(intVal);
-                        Array.Copy(bytes, 0, rawData, offset, 3);
+                        int intVal = (int)(val * 8388607f);
+                        byte[] sampleBytes = BitConverter.GetBytes(intVal);
+                        Array.Copy(sampleBytes, 0, bytes, offset, 3);
                     }
                 }
             }
 
-            return rawData;
+            return bytes;
         }
 
-        private void PlayPingToDevice(MMDevice device, byte[] pingBytes, WaveFormat format)
+        private float[] ParseCaptureBuffer(byte[] rawBuffer, int bytesRecorded, WaveFormat format)
         {
-            using (var player = new WasapiOut(device, AudioClientShareMode.Shared, true, 50))
-            using (var ms = new System.IO.MemoryStream(pingBytes))
-            using (var rawStream = new RawSourceWaveStream(ms, format))
-            {
-                player.Init(rawStream);
-                player.Play();
-                System.Threading.Thread.Sleep(100);
-                player.Stop();
-            }
-        }
+            int bytesPerSample = format.BitsPerSample / 8;
+            int channels = format.Channels;
+            int totalSamples = bytesRecorded / (bytesPerSample * channels);
+            float[] monoSamples = new float[totalSamples];
+            bool isFloat = IsFormatFloat(format);
 
-        private double MeasurePingDelay(MMDevice renderDevice)
-        {
-            if (WaveInEvent.DeviceCount == 0)
+            for (int i = 0; i < totalSamples; i++)
             {
-                return -1;
-            }
-
-            int targetDeviceNumber = 0;
-            try
-            {
-                using (var enumerator = new MMDeviceEnumerator())
+                float sum = 0f;
+                for (int channel = 0; channel < channels; channel++)
                 {
-                    var commMic = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-                    string micFriendlyName = commMic.FriendlyName;
-                    
-                    for (int i = 0; i < WaveInEvent.DeviceCount; i++)
+                    int offset = (i * channels + channel) * bytesPerSample;
+                    float sampleValue = 0f;
+
+                    if (format.BitsPerSample == 32 && isFloat)
                     {
-                        var caps = WaveInEvent.GetCapabilities(i);
-                        string prodName = caps.ProductName ?? "";
-                        if (micFriendlyName.Contains(prodName) || prodName.Contains(micFriendlyName))
-                        {
-                            targetDeviceNumber = i;
-                            System.Console.WriteLine($"[AcousticMeasurer] Matched default communications mic '{micFriendlyName}' to waveIn index {i}");
-                            break;
-                        }
+                        sampleValue = BitConverter.ToSingle(rawBuffer, offset);
                     }
+                    else if (format.BitsPerSample == 16)
+                    {
+                        short shortVal = BitConverter.ToInt16(rawBuffer, offset);
+                        sampleValue = shortVal / 32768f;
+                    }
+                    else if (format.BitsPerSample == 24)
+                    {
+                        int intVal = (rawBuffer[offset + 2] << 16) | (rawBuffer[offset + 1] << 8) | rawBuffer[offset];
+                        if ((intVal & 0x800000) != 0) intVal |= unchecked((int)0xff000000);
+                        sampleValue = intVal / 8388608f;
+                    }
+                    sum += sampleValue;
+                }
+                monoSamples[i] = sum / channels;
+            }
+
+            return monoSamples;
+        }
+
+        private int RunCrossCorrelation(float[] reference, float[] recorded, out double peakToAverageRatio, int captureSampleRate = 0)
+        {
+            int M = reference.Length;
+            int N = recorded.Length;
+            int maxLag = N - M;
+
+            // 1. Subtract mean from reference to remove DC offset
+            float refSum = 0f;
+            for (int i = 0; i < M; i++) refSum += reference[i];
+            float refMean = refSum / M;
+            float[] refNorm = new float[M];
+            for (int i = 0; i < M; i++) refNorm[i] = reference[i] - refMean;
+
+            // 2. Subtract mean from recorded to remove DC offset
+            float recSum = 0f;
+            for (int i = 0; i < N; i++) recSum += recorded[i];
+            float recMean = recSum / N;
+            float[] recNorm = new float[N];
+            for (int i = 0; i < N; i++) recNorm[i] = recorded[i] - recMean;
+
+            // 3. Compute cross-correlation in parallel
+            float[] correlation = new float[maxLag];
+            System.Threading.Tasks.Parallel.For(0, maxLag, n =>
+            {
+                float sum = 0f;
+                for (int m = 0; m < M; m++)
+                {
+                    sum += refNorm[m] * recNorm[n + m];
+                }
+                correlation[n] = sum;
+            });
+
+            // 4. Find peak and compute Peak-to-Average Ratio
+            float maxVal = float.MinValue;
+            int maxIndex = 0;
+            float sumAbs = 0f;
+
+            for (int n = 0; n < maxLag; n++)
+            {
+                float absVal = Math.Abs(correlation[n]);
+                sumAbs += absVal;
+                if (absVal > maxVal)
+                {
+                    maxVal = absVal;
+                    maxIndex = n;
                 }
             }
-            catch (Exception ex)
+
+            float avgVal = sumAbs / maxLag;
+            peakToAverageRatio = avgVal > 0 ? (maxVal / avgVal) : 0;
+
+            // 5. Diagnostic logging — emitted to both the debug output and the attached terminal console
+            double calculatedLatencyMs = captureSampleRate > 0
+                ? (double)maxIndex / captureSampleRate * 1000.0
+                : double.NaN;
+
+            string dspLog1 = $"[DSP] Peak Correlation Score: {maxVal:F4}";
+            string dspLog2 = $"[DSP] Raw Sample Index: {maxIndex}";
+            string dspLog3 = $"[DSP] Calculated Latency (ms): {calculatedLatencyMs:F2}";
+
+            System.Diagnostics.Debug.WriteLine(dspLog1);
+            System.Diagnostics.Debug.WriteLine(dspLog2);
+            System.Diagnostics.Debug.WriteLine(dspLog3);
+            System.Console.WriteLine(dspLog1);
+            System.Console.WriteLine(dspLog2);
+            System.Console.WriteLine(dspLog3);
+
+            return maxIndex;
+        }
+
+        private Tuple<int, int> FindDualPeaks(float[] reference, float[] recorded, int sampleRate)
+        {
+            int M = reference.Length;
+            int N = recorded.Length;
+            int maxLag = N - M;
+            if (maxLag <= 0)
             {
-                System.Console.WriteLine($"[AcousticMeasurer] Error resolving default communication mic: {ex.Message}");
+                return Tuple.Create(0, 0);
             }
 
-            var stopwatch = new System.Diagnostics.Stopwatch();
-            double detectedTimeMs = -1;
-            bool pingDetected = false;
+            // 1. Subtract mean from reference to remove DC offset
+            float refSum = 0f;
+            for (int i = 0; i < M; i++) refSum += reference[i];
+            float refMean = refSum / M;
+            float[] refNorm = new float[M];
+            for (int i = 0; i < M; i++) refNorm[i] = reference[i] - refMean;
 
-            try
+            // 2. Subtract mean from recorded to remove DC offset
+            float recSum = 0f;
+            for (int i = 0; i < N; i++) recSum += recorded[i];
+            float recMean = recSum / N;
+            float[] recNorm = new float[N];
+            for (int i = 0; i < N; i++) recNorm[i] = recorded[i] - recMean;
+
+            // 3. Compute cross-correlation in parallel
+            float[] correlation = new float[maxLag];
+            System.Threading.Tasks.Parallel.For(0, maxLag, n =>
             {
-                using (var waveIn = new WaveInEvent())
+                float sum = 0f;
+                for (int m = 0; m < M; m++)
                 {
-                    waveIn.DeviceNumber = targetDeviceNumber;
-                    waveIn.WaveFormat = new WaveFormat(44100, 16, 1);
-                    waveIn.BufferMilliseconds = 10;
+                    sum += refNorm[m] * recNorm[n + m];
+                }
+                correlation[n] = sum;
+            });
 
-                    double maxBaseline = 0;
+            // 4. Find the first peak
+            float maxVal1 = float.MinValue;
+            int peak1Index = 0;
+            for (int n = 0; n < maxLag; n++)
+            {
+                float absVal = Math.Abs(correlation[n]);
+                if (absVal > maxVal1)
+                {
+                    maxVal1 = absVal;
+                    peak1Index = n;
+                }
+            }
 
-                    waveIn.DataAvailable += (s, e) =>
+            // 5. Blanking Window: To prevent finding the same chirp twice, clear or zero out correlation scores in 200ms window surrounding peak1Index
+            int blankingSamples = (int)(0.200 * sampleRate);
+            int startBlank = Math.Max(0, peak1Index - blankingSamples / 2);
+            int endBlank = Math.Min(maxLag - 1, peak1Index + blankingSamples / 2);
+            for (int n = startBlank; n <= endBlank; n++)
+            {
+                correlation[n] = 0f;
+            }
+
+            // 6. Find the second peak
+            float maxVal2 = float.MinValue;
+            int peak2Index = 0;
+            for (int n = 0; n < maxLag; n++)
+            {
+                float absVal = Math.Abs(correlation[n]);
+                if (absVal > maxVal2)
+                {
+                    maxVal2 = absVal;
+                    peak2Index = n;
+                }
+            }
+
+            return Tuple.Create(peak1Index, peak2Index);
+        }
+
+        public async Task<Tuple<double, double>> RunIsolatedCalibrationAsync(
+            MMDevice micDevice,
+            MMDevice refDevice,
+            MMDevice targetDevice,
+            IProgress<string> progress)
+        {
+            if (!isRouting)
+            {
+                throw new InvalidOperationException("Live audio routing must be active to perform calibration. Please start routing first.");
+            }
+
+            AudioRoute refRoute = null;
+            AudioRoute targetRoute = null;
+
+            lock (routesLock)
+            {
+                activeRoutes.TryGetValue(refDevice.ID, out refRoute);
+                activeRoutes.TryGetValue(targetDevice.ID, out targetRoute);
+            }
+
+            var result = await MeasureLiveLatencyAsync(micDevice, refDevice, refRoute, targetDevice, targetRoute, progress);
+            return result;
+        }
+
+        private async Task<Tuple<double, double>> MeasureLiveLatencyAsync(
+            MMDevice micDevice,
+            MMDevice refDevice,
+            AudioRoute refRoute,
+            MMDevice targetDevice,
+            AudioRoute targetRoute,
+            IProgress<string> progress)
+        {
+            int micSampleRate = micDevice.AudioClient.MixFormat.SampleRate;
+
+            double chirpDuration = 0.250; // 250ms
+            double f0 = 500.0;
+            double f1 = Math.Min(8000.0, micSampleRate * 0.45);
+
+            progress.Report("Generating reference signals...");
+
+            // Generate reference chirp (microphone sample rate)
+            float[] referenceChirp = GenerateLogChirp(micSampleRate, chirpDuration, f0, f1);
+
+            // Determine sample rates for Reference and Target playback
+            MMDevice defaultPlayDevice;
+            using (var enumerator = new MMDeviceEnumerator())
+            {
+                defaultPlayDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Console);
+            }
+            if (defaultPlayDevice == null)
+            {
+                throw new InvalidOperationException("No default playback device found.");
+            }
+            int refSampleRate = defaultPlayDevice.AudioClient.MixFormat.SampleRate;
+            int targetSampleRate = targetRoute != null ? targetRoute.DspProvider.WaveFormat.SampleRate : targetDevice.AudioClient.MixFormat.SampleRate;
+
+            float[] refPlayChirp = GenerateLogChirp(refSampleRate, chirpDuration, f0, f1);
+
+            double baseMasterDelayMs = 0;
+            double baseTargetDelayMs = 0;
+
+            if (refRoute != null)
+            {
+                baseMasterDelayMs = refRoute.DspProvider.DelayMs;
+            }
+            if (targetRoute != null)
+            {
+                baseTargetDelayMs = targetRoute.DspProvider.DelayMs;
+            }
+
+            double relativeDelayMs = baseTargetDelayMs - baseMasterDelayMs;
+
+            // Apply target spacer
+            if (targetRoute != null)
+            {
+                targetRoute.SetDelay(baseTargetDelayMs + 500.0);
+                var targetItem = devicesList.FirstOrDefault(d => d.Id == targetDevice.ID);
+                if (targetItem != null)
+                {
+                    Dispatcher.Invoke(() =>
                     {
-                        float peak = 0;
-                        int sampleCount = e.BytesRecorded / 2;
-                        for (int i = 0; i < sampleCount; i++)
-                        {
-                            short sample = BitConverter.ToInt16(e.Buffer, i * 2);
-                            float absSample = Math.Abs(sample) / 32768f;
-                            if (absSample > peak) peak = absSample;
-                        }
+                        targetItem.DelayMs = (int)Math.Round(baseTargetDelayMs + 500.0);
+                    });
+                }
+            }
+            if (refRoute != null)
+            {
+                refRoute.SetDelay(baseMasterDelayMs);
+                var refItem = devicesList.FirstOrDefault(d => d.Id == refDevice.ID);
+                if (refItem != null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        refItem.DelayMs = (int)Math.Round(baseMasterDelayMs);
+                    });
+                }
+            }
 
-                        if (!stopwatch.IsRunning)
+            // Start the continuous keep-alive playback before the loop
+            using (var refPlayer = new WasapiOut(defaultPlayDevice, AudioClientShareMode.Shared, true, 50))
+            {
+                var refFormat = WaveFormat.CreateIeeeFloatWaveFormat(refSampleRate, defaultPlayDevice.AudioClient.MixFormat.Channels);
+                var refProvider = new IsolatedCalibrationProvider(refFormat, refPlayChirp);
+                refPlayer.Init(new SampleToWaveProvider(refProvider));
+                refPlayer.Play();
+
+                // Wait 2000ms to allow audio buffer to stretch and stabilize (with continuous hum playing)
+                await Task.Delay(2000);
+
+                for (int iteration = 1; iteration <= 3; iteration++)
+                {
+                    progress.Report($"[Calibration Loop] Starting iteration {iteration}...");
+
+                    var recordedSamples = new List<float>();
+                    var recordLock = new object();
+
+                    using (var capture = new WasapiCapture(micDevice))
+                    {
+                        capture.DataAvailable += (s, e) =>
                         {
-                            if (peak > maxBaseline) maxBaseline = peak;
-                            System.Console.WriteLine($"[AcousticMeasurer] Noise Baseline Peak: {peak:F4} (MaxBaseline: {maxBaseline:F4})");
-                        }
-                        else if (!pingDetected)
-                        {
-                            // Highly sensitive threshold (0.005) with 2x baseline multiplier
-                            double threshold = Math.Max(0.005, maxBaseline * 2.0);
-                            System.Console.WriteLine($"[AcousticMeasurer] Ping Capture Peak: {peak:F4} (Threshold: {threshold:F4})");
-                            
-                            if (peak > threshold)
+                            float[] parsed = ParseCaptureBuffer(e.Buffer, e.BytesRecorded, capture.WaveFormat);
+                            lock (recordLock)
                             {
-                                detectedTimeMs = stopwatch.Elapsed.TotalMilliseconds;
-                                pingDetected = true;
-                                stopwatch.Stop();
-                                System.Console.WriteLine($"[AcousticMeasurer] Spike Detected at {detectedTimeMs:F2} ms!");
+                                recordedSamples.AddRange(parsed);
                             }
-                        }
-                    };
+                        };
 
-                    waveIn.StartRecording();
+                        capture.StartRecording();
 
-                    // Warm up stream and collect background noise floor (400ms)
-                    System.Threading.Thread.Sleep(400);
+                        // Wait 300ms to ensure the WASAPI capture stream is fully active and recording
+                        await Task.Delay(300);
 
-                    int pSampleCount;
-                    byte[] pingBytes = GeneratePingSamples(renderDevice.AudioClient.MixFormat, out pSampleCount);
+                        // Trigger the chirp on the continuous player
+                        refProvider.Trigger(null);
 
-                    stopwatch.Start();
-                    PlayPingToDevice(renderDevice, pingBytes, renderDevice.AudioClient.MixFormat);
+                        // Wait 2000ms for Master and routed Target sounds to clear the room and reach mic
+                        await Task.Delay(2000);
 
-                    // Wait for spike (extended 2.5s timeout)
-                    int timeoutCount = 0;
-                    while (!pingDetected && timeoutCount < 250) // 250 * 10ms = 2500ms
-                    {
-                        System.Threading.Thread.Sleep(10);
-                        timeoutCount++;
+                        try { capture.StopRecording(); } catch { }
                     }
 
-                    waveIn.StopRecording();
+                    // Process recording array on background thread pool worker
+                    float[] recordedArray;
+                    lock (recordLock)
+                    {
+                        recordedArray = recordedSamples.ToArray();
+                    }
+
+                    double measuredGapMs = 0;
+                    await Task.Run(() =>
+                    {
+                        var hpFilter = BiQuadFilter.HighPassFilter(micSampleRate, (float)f0, 0.707f);
+                        var lpFilter = BiQuadFilter.LowPassFilter(micSampleRate, (float)f1, 0.707f);
+                        float[] filteredRecorded = new float[recordedArray.Length];
+                        for (int i = 0; i < recordedArray.Length; i++)
+                        {
+                            float sample = hpFilter.Transform(recordedArray[i]);
+                            filteredRecorded[i] = lpFilter.Transform(sample);
+                        }
+
+                        var peaks = FindDualPeaks(referenceChirp, filteredRecorded, micSampleRate);
+                        int Peak1_SampleIndex = Math.Min(peaks.Item1, peaks.Item2);
+                        int Peak2_SampleIndex = Math.Max(peaks.Item1, peaks.Item2);
+
+                        measuredGapMs = ((double)(Peak2_SampleIndex - Peak1_SampleIndex) / micSampleRate) * 1000.0;
+                    });
+
+                    // Calculate the real inherent pipeline error
+                    double errorMs = measuredGapMs - 500.0;
+
+                    // Log diagnostic data for each pass
+                    string passLog = $"[Calibration Loop] Pass {iteration} - Measured Gap: {measuredGapMs:F2}ms, Residual Error: {errorMs:F2}ms";
+                    LogDebug(passLog);
+                    System.Console.WriteLine(passLog);
+                    progress.Report(passLog);
+
+                    // Convergence threshold is 2.0ms
+                    if (Math.Abs(errorMs) <= 2.0)
+                    {
+                        string lockLog = $"[Calibration Loop] Successful lock achieved on pass {iteration}.";
+                        LogDebug(lockLog);
+                        System.Console.WriteLine(lockLog);
+                        progress.Report(lockLog);
+                        break;
+                    }
+
+                    // Map relativeDelayMs back to baseMasterDelayMs and baseTargetDelayMs
+                    if (refRoute != null)
+                    {
+                        // Case A: Reference speaker is routed, so delays are actively applied.
+                        // We accumulate the residual error to converge.
+                        relativeDelayMs -= errorMs;
+
+                        if (relativeDelayMs >= 0)
+                        {
+                            baseTargetDelayMs = relativeDelayMs;
+                            baseMasterDelayMs = 0.0;
+                        }
+                        else
+                        {
+                            baseTargetDelayMs = 0.0;
+                            baseMasterDelayMs = -relativeDelayMs;
+                        }
+                    }
+                    else
+                    {
+                        // Case B: Reference speaker is the default device and NOT routed.
+                        // Its delay is physically always 0.0ms, so we cannot accumulate delay.
+                        // The actual required target delay difference is (baseTargetDelayMs - errorMs).
+                        double requiredDiff = baseTargetDelayMs - errorMs;
+
+                        if (requiredDiff >= 0)
+                        {
+                            baseTargetDelayMs = requiredDiff;
+                            baseMasterDelayMs = 0.0;
+                            relativeDelayMs = baseTargetDelayMs;
+                        }
+                        else
+                        {
+                            baseTargetDelayMs = 0.0;
+                            baseMasterDelayMs = -requiredDiff;
+                            relativeDelayMs = -baseMasterDelayMs;
+
+                            string warningMsg = $"[Calibration Warning] Reference speaker '{refDevice.FriendlyName}' is faster by {-requiredDiff:F1}ms but is not currently routed. " +
+                                                $"To sync them, either: (1) Set the slower speaker '{targetDevice.FriendlyName}' as the Windows Default Playback Device and route the faster one, or " +
+                                                $"(2) Check both speakers in the checklist (requires setting a dummy device as Windows default to avoid feedback).";
+                            LogDebug(warningMsg);
+                            System.Console.WriteLine(warningMsg);
+                            progress.Report(warningMsg);
+                        }
+                    }
+
+                    // Apply updated delays
+                    if (targetRoute != null)
+                    {
+                        targetRoute.SetDelay(baseTargetDelayMs + 500.0);
+                        var targetItem = devicesList.FirstOrDefault(d => d.Id == targetDevice.ID);
+                        if (targetItem != null)
+                        {
+                            Dispatcher.Invoke(() =>
+                            {
+                                targetItem.DelayMs = (int)Math.Round(baseTargetDelayMs + 500.0);
+                            });
+                        }
+                    }
+                    if (refRoute != null)
+                    {
+                        refRoute.SetDelay(baseMasterDelayMs);
+                        var refItem = devicesList.FirstOrDefault(d => d.Id == refDevice.ID);
+                        if (refItem != null)
+                        {
+                            Dispatcher.Invoke(() =>
+                            {
+                                refItem.DelayMs = (int)Math.Round(baseMasterDelayMs);
+                            });
+                        }
+                    }
+
+                    // Await 1500ms before starting next iteration
+                    await Task.Delay(1500);
                 }
-            }
-            catch (Exception ex)
-            {
-                System.Console.WriteLine($"[AcousticMeasurer] Error during record/play cycle: {ex.Message}");
-                return -1;
+
+                refPlayer.Stop();
             }
 
-            return detectedTimeMs;
+            // Teardown: restore delays strictly to base values without spacer
+            if (targetRoute != null)
+            {
+                targetRoute.SetDelay(baseTargetDelayMs);
+                var targetItem = devicesList.FirstOrDefault(d => d.Id == targetDevice.ID);
+                if (targetItem != null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        targetItem.DelayMs = (int)Math.Round(baseTargetDelayMs);
+                    });
+                }
+            }
+            if (refRoute != null)
+            {
+                refRoute.SetDelay(baseMasterDelayMs);
+                var refItem = devicesList.FirstOrDefault(d => d.Id == refDevice.ID);
+                if (refItem != null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        refItem.DelayMs = (int)Math.Round(baseMasterDelayMs);
+                    });
+                }
+            }
+
+            return Tuple.Create(baseTargetDelayMs, baseMasterDelayMs);
+        }
+
+        public void ApplyCalibrationResult(string referenceDeviceId, string targetDeviceId, double targetDelayMs, double referenceDelayMs)
+        {
+            var refItem = devicesList.FirstOrDefault(d => d.Id == referenceDeviceId);
+            var targetItem = devicesList.FirstOrDefault(d => d.Id == targetDeviceId);
+
+            if (refItem != null && targetItem != null)
+            {
+                refItem.DelayMs = (int)Math.Round(referenceDelayMs);
+                targetItem.DelayMs = (int)Math.Round(targetDelayMs);
+
+                // Set meaningful measured relative latencies:
+                // The faster device has relative latency 0ms, the slower device has its delay value as latency
+                if (referenceDelayMs > 0)
+                {
+                    refItem.MeasuredLatencyMs = (int)Math.Round(referenceDelayMs);
+                    targetItem.MeasuredLatencyMs = 0;
+                }
+                else
+                {
+                    refItem.MeasuredLatencyMs = 0;
+                    targetItem.MeasuredLatencyMs = (int)Math.Round(targetDelayMs);
+                }
+
+                LogDebug($"[Isolated Calibration] Applied sync result: Reference '{refItem.Name}' delay={refItem.DelayMs}ms (latency={refItem.MeasuredLatencyMs}ms), Target '{targetItem.Name}' delay={targetItem.DelayMs}ms (latency={targetItem.MeasuredLatencyMs}ms)");
+            }
+        }
+
+        public bool IsDeviceRouted(string deviceId)
+        {
+            lock (routesLock)
+            {
+                return activeRoutes.ContainsKey(deviceId);
+            }
         }
 
         private void BtnAutoSync_Click(object sender, RoutedEventArgs e)
         {
-            var routedItem = LstDevices.SelectedItem as DeviceItem;
-            if (routedItem == null)
-            {
-                MessageBox.Show("Please select (click on) a routed output device in the list to calibrate it against the Master device.", "Select Device", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
-            string routedDeviceId = routedItem.Id;
-            string routedDeviceName = routedItem.Name;
-
-            BtnStartStop.IsEnabled = false;
-            TxtCaptureDevice.Text = "Calibration: Preparing...";
-
-            System.Console.WriteLine($"[Auto-Sync] Initiating calibration between Master and '{routedDeviceName}'...");
-
-            var thread = new System.Threading.Thread(() =>
-            {
-                bool wasRouting = false;
-                Dispatcher.Invoke(() =>
-                {
-                    wasRouting = isRouting;
-                    if (isRouting) StopRouting();
-                    TxtCaptureDevice.Text = "Calibration: Measuring Master latency...";
-                });
-
-                try
-                {
-                    using (var enumerator = new MMDeviceEnumerator())
-                    {
-                        var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Console);
-                        var routedDevice = enumerator.GetDevice(routedDeviceId);
-
-                        System.Console.WriteLine($"[Auto-Sync] Running measurement on STA Thread.");
-                        System.Console.WriteLine($"[Auto-Sync] Master: {defaultDevice.FriendlyName}");
-                        System.Console.WriteLine($"[Auto-Sync] Routed: {routedDevice.FriendlyName}");
-
-                        // 1. Measure default playback output (Master)
-                        double latencyMaster = MeasurePingDelay(defaultDevice);
-                        if (latencyMaster < 0)
-                        {
-                            System.Console.WriteLine("[Auto-Sync] Error: Calibration failed on Master device.");
-                            Dispatcher.Invoke(() =>
-                            {
-                                TxtCaptureDevice.Text = "Calibration: Master failed";
-                                BtnStartStop.IsEnabled = true;
-                                MessageBox.Show("Acoustic calibration failed on the default Master output.\n\nEnsure speakers are unmuted, microphone is unmuted, and volume is sufficient.", "Calibration Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                                if (wasRouting) StartRouting();
-                            });
-                            return;
-                        }
-
-                        Dispatcher.Invoke(() =>
-                        {
-                            TxtCaptureDevice.Text = "Calibration: Measuring Routed latency...";
-                        });
-
-                        // 2. Measure selected target playback output (Routed)
-                        double latencyRouted = MeasurePingDelay(routedDevice);
-                        if (latencyRouted < 0)
-                        {
-                            System.Console.WriteLine($"[Auto-Sync] Error: Calibration failed on routed device: {routedDeviceName}");
-                            Dispatcher.Invoke(() =>
-                            {
-                                TxtCaptureDevice.Text = "Calibration: Routed failed";
-                                BtnStartStop.IsEnabled = true;
-                                MessageBox.Show($"Acoustic calibration failed on routed device '{routedDeviceName}'.\n\nEnsure device is connected, selected, and volume is sufficient.", "Calibration Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                                if (wasRouting) StartRouting();
-                            });
-                            return;
-                        }
-
-                        // 3. Compute delta and update UI
-                        int lMaster = (int)latencyMaster;
-                        int lRouted = (int)latencyRouted;
-                        int delta = Math.Abs(lMaster - lRouted);
-
-                        System.Console.WriteLine($"[Auto-Sync] Complete. Master latency: {lMaster}ms | Routed latency: {lRouted}ms | Delta: {delta}ms");
-
-                        Dispatcher.Invoke(() =>
-                        {
-                            // Update UI labels
-                            var masterItem = devicesList.FirstOrDefault(d => d.IsDefault);
-                            if (masterItem != null)
-                            {
-                                masterItem.MeasuredLatencyMs = lMaster;
-                            }
-                            
-                            // Re-fetch routedItem reference in case list was refreshed
-                            var currentRoutedItem = devicesList.FirstOrDefault(d => d.Id == routedDeviceId);
-                            if (currentRoutedItem != null)
-                            {
-                                currentRoutedItem.MeasuredLatencyMs = lRouted;
-                            }
-
-                            // Apply delay offset to the faster device
-                            if (lMaster < lRouted)
-                            {
-                                System.Console.WriteLine($"[Auto-Sync] Master is faster. Applying {delta}ms delay to Master.");
-                                if (masterItem != null) masterItem.DelayMs = delta;
-                                if (currentRoutedItem != null) currentRoutedItem.DelayMs = 0;
-                            }
-                            else
-                            {
-                                System.Console.WriteLine($"[Auto-Sync] Routed device is faster. Applying {delta}ms delay to Routed.");
-                                if (currentRoutedItem != null) currentRoutedItem.DelayMs = delta;
-                                if (masterItem != null) masterItem.DelayMs = 0;
-                            }
-
-                            BtnStartStop.IsEnabled = true;
-                            TxtCaptureDevice.Text = $"Calibration: Done (Delta: {delta}ms)";
-                            
-                            MessageBox.Show($"Acoustic Calibration Complete!\n\n" +
-                                            $"Master Device Latency: {lMaster}ms\n" +
-                                            $"Routed Device Latency: {lRouted}ms\n\n" +
-                                            $"Calculated Offset: {delta}ms applied to the faster output.",
-                                            "Sync Successful", MessageBoxButton.OK, MessageBoxImage.Information);
-
-                            if (wasRouting) StartRouting();
-                        });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Console.WriteLine($"[Auto-Sync] Critical thread error: {ex.Message}\n{ex.StackTrace}");
-                    Dispatcher.Invoke(() =>
-                    {
-                        TxtCaptureDevice.Text = "Calibration: Error";
-                        BtnStartStop.IsEnabled = true;
-                        MessageBox.Show($"An unexpected error occurred during calibration:\n\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        if (wasRouting) StartRouting();
-                    });
-                }
-            });
-
-            thread.SetApartmentState(System.Threading.ApartmentState.STA);
-            thread.IsBackground = true;
-            thread.Start();
+            var dialog = new CalibrationSetupView(this);
+            dialog.Owner = this;
+            dialog.ShowDialog();
         }
 
         private void BtnRefresh_Click(object sender, RoutedEventArgs e)
@@ -773,7 +1377,7 @@ namespace MultiAudioRouter
             }
         }
 
-        private void StartRouting()
+        public void StartRouting()
         {
             try
             {
@@ -811,9 +1415,13 @@ namespace MultiAudioRouter
                         {
                             System.Console.WriteLine($"[Routing] Warning: feedback loop possible on '{item.Name}'");
                             var result = MessageBox.Show(
-                                $"You have selected '{item.Name}' which is the default system output device.\n\n" +
-                                "Routing system loopback audio back to the default output device will result in a feedback loop (echoes/screeching).\n\n" +
-                                "Do you want to proceed anyway?",
+                                $"You have selected '{item.Name}', which is currently the default system playback device.\n\n" +
+                                "Routing the loopback capture back to the default output device will cause an infinite feedback loop (echoes/screeching).\n\n" +
+                                "To apply delay and crossover processing to BOTH your main speakers and headphones:\n" +
+                                "1. Set the Windows default playback device to another output (such as built-in 'Realtek Audio' laptop speakers, or a virtual cable).\n" +
+                                "2. Mute or turn down the volume of that dummy/default device physically so you don't hear it.\n" +
+                                "3. In this app, check BOTH your main speakers and headphones in the checklist so both are routed.\n\n" +
+                                "Do you want to proceed with routing back to the default device anyway?",
                                 "Warning: Audio Loop Feedback",
                                 MessageBoxButton.YesNo,
                                 MessageBoxImage.Warning
@@ -829,9 +1437,8 @@ namespace MultiAudioRouter
 
                         try
                         {
-                            System.Console.WriteLine($"[Routing] Initializing route to: '{item.Name}' with delay={item.DelayMs}ms, isolation={item.IsolationMode}");
-                            var route = new AudioRoute(item.Device, capture.WaveFormat, item.IsolationMode);
-                            route.SetDelay(item.DelayMs);
+                            System.Console.WriteLine($"[Routing] Initializing route to: '{item.Name}' with delay={item.DelayMs}ms, isolation={item.IsolationMode}, crossover={item.CrossoverMode} ({globalCrossoverFrequency}Hz)");
+                            var route = new AudioRoute(item.Device, capture.WaveFormat, item.IsolationMode, item.CrossoverMode, globalCrossoverFrequency, item.DelayMs);
                             activeRoutes[item.Id] = route;
                         }
                         catch (Exception ex)
@@ -870,7 +1477,7 @@ namespace MultiAudioRouter
             }
         }
 
-        private void StopRouting()
+        public void StopRouting()
         {
             System.Console.WriteLine($"[Routing] Stopping audio routing...");
             isRouting = false;
@@ -1000,9 +1607,13 @@ namespace MultiAudioRouter
                 {
                     System.Console.WriteLine($"[Routing] Warning: dynamic feedback loop possible on '{item.Name}'");
                     var result = MessageBox.Show(
-                        $"You have checked '{item.Name}' which is the default system output device.\n\n" +
-                        "Routing system loopback audio back to the default output device will result in a feedback loop (echoes/screeching).\n\n" +
-                        "Do you want to proceed anyway?",
+                        $"You have checked '{item.Name}', which is currently the default system playback device.\n\n" +
+                        "Routing the loopback capture back to the default output device will cause an infinite feedback loop (echoes/screeching).\n\n" +
+                        "To apply delay and crossover processing to BOTH your main speakers and headphones:\n" +
+                        "1. Set the Windows default playback device to another output (such as built-in 'Realtek Audio' laptop speakers, or a virtual cable).\n" +
+                        "2. Mute or turn down the volume of that dummy/default device physically so you don't hear it.\n" +
+                        "3. In this app, check BOTH your main speakers and headphones in the checklist so both are routed.\n\n" +
+                        "Do you want to proceed with routing back to the default device anyway?",
                         "Warning: Audio Loop Feedback",
                         MessageBoxButton.YesNo,
                         MessageBoxImage.Warning
@@ -1019,9 +1630,8 @@ namespace MultiAudioRouter
 
                 try
                 {
-                    System.Console.WriteLine($"[Routing] Initializing dynamic route to: '{item.Name}' with delay={item.DelayMs}ms, isolation={item.IsolationMode}");
-                    var route = new AudioRoute(item.Device, capture.WaveFormat, item.IsolationMode);
-                    route.SetDelay(item.DelayMs);
+                    System.Console.WriteLine($"[Routing] Initializing dynamic route to: '{item.Name}' with delay={item.DelayMs}ms, isolation={item.IsolationMode}, crossover={item.CrossoverMode} ({globalCrossoverFrequency}Hz)");
+                    var route = new AudioRoute(item.Device, capture.WaveFormat, item.IsolationMode, item.CrossoverMode, globalCrossoverFrequency, item.DelayMs);
                     activeRoutes[item.Id] = route;
                     System.Console.WriteLine($"[Routing] Dynamic route to '{item.Name}' started successfully.");
                 }
@@ -1070,6 +1680,185 @@ namespace MultiAudioRouter
             StopRouting();
             uiUpdateTimer?.Stop();
             base.OnClosing(e);
+        }
+    }
+
+    public class IsolatedCalibrationProvider : ISampleProvider
+    {
+        private readonly WaveFormat waveFormat;
+        private readonly float[] chirpSamples;
+        private readonly double sineFrequency = 50.0;
+        private readonly double sineAmplitude = 0.01;
+        private double sinePhase = 0.0;
+
+        private int chirpSampleIndex = -1;
+        private readonly object triggerLock = new object();
+        private Action onChirpStart;
+
+        public IsolatedCalibrationProvider(WaveFormat format, float[] chirp)
+        {
+            this.waveFormat = format;
+            this.chirpSamples = chirp;
+        }
+
+        public WaveFormat WaveFormat => waveFormat;
+
+        public void Trigger(Action callback)
+        {
+            lock (triggerLock)
+            {
+                onChirpStart = callback;
+                chirpSampleIndex = 0;
+            }
+        }
+
+        public int Read(float[] buffer, int offset, int count)
+        {
+            int channels = waveFormat.Channels;
+            int frames = count / channels;
+
+            double sampleRate = waveFormat.SampleRate;
+            double phaseIncrement = 2.0 * Math.PI * sineFrequency / sampleRate;
+
+            for (int f = 0; f < frames; f++)
+            {
+                // Generate 50Hz hum
+                float sineSample = (float)(sineAmplitude * Math.Sin(sinePhase));
+                sinePhase += phaseIncrement;
+                if (sinePhase >= 2.0 * Math.PI)
+                {
+                    sinePhase -= 2.0 * Math.PI;
+                }
+
+                // Check and mix chirp
+                float chirpVal = 0.0f;
+                bool triggerNow = false;
+
+                lock (triggerLock)
+                {
+                    if (chirpSampleIndex >= 0)
+                    {
+                        if (chirpSampleIndex == 0)
+                        {
+                            triggerNow = true;
+                        }
+
+                        if (chirpSampleIndex < chirpSamples.Length)
+                        {
+                            chirpVal = chirpSamples[chirpSampleIndex];
+                            chirpSampleIndex++;
+                        }
+                        else
+                        {
+                            chirpSampleIndex = -1;
+                        }
+                    }
+                }
+
+                if (triggerNow)
+                {
+                    onChirpStart?.Invoke();
+                    onChirpStart = null;
+                }
+
+                float mixedSample = sineSample + chirpVal;
+                // Clamp to prevent clipping
+                if (mixedSample > 1.0f) mixedSample = 1.0f;
+                else if (mixedSample < -1.0f) mixedSample = -1.0f;
+
+                for (int c = 0; c < channels; c++)
+                {
+                    buffer[offset + f * channels + c] = mixedSample;
+                }
+            }
+
+            return count;
+        }
+    }
+
+    public class ChirpInjectionProvider : ISampleProvider
+    {
+        private readonly ISampleProvider _sourceProvider;
+        private float[] _chirpData;
+        private int _chirpIndex = -1;
+        private Action _onStart;
+        private readonly object _lock = new object();
+
+        public ChirpInjectionProvider(ISampleProvider sourceProvider)
+        {
+            _sourceProvider = sourceProvider;
+        }
+
+        public WaveFormat WaveFormat => _sourceProvider.WaveFormat;
+
+        public void TriggerChirp(float[] chirpData, Action onStart)
+        {
+            lock (_lock)
+            {
+                _chirpData = chirpData;
+                _chirpIndex = 0;
+                _onStart = onStart;
+            }
+        }
+
+        public void CancelChirp()
+        {
+            lock (_lock)
+            {
+                _chirpData = null;
+                _chirpIndex = -1;
+                _onStart = null;
+            }
+        }
+
+        public int Read(float[] buffer, int offset, int count)
+        {
+            int samplesRead = _sourceProvider.Read(buffer, offset, count);
+
+            lock (_lock)
+            {
+                if (_chirpData != null && _chirpIndex >= 0)
+                {
+                    int channels = WaveFormat.Channels;
+                    int framesRead = samplesRead / channels;
+
+                    if (_chirpIndex == 0 && _onStart != null)
+                    {
+                        _onStart.Invoke();
+                        _onStart = null;
+                    }
+
+                    for (int f = 0; f < framesRead; f++)
+                    {
+                        if (_chirpIndex < _chirpData.Length)
+                        {
+                            float chirpVal = _chirpData[_chirpIndex];
+
+                            for (int c = 0; c < channels; c++)
+                            {
+                                int idx = offset + f * channels + c;
+                                // Duck the live audio to 15% volume, then mix the chirp
+                                float mixed = (buffer[idx] * 0.15f) + chirpVal;
+
+                                // Clamp to prevent clipping
+                                if (mixed > 1.0f) mixed = 1.0f;
+                                else if (mixed < -1.0f) mixed = -1.0f;
+
+                                buffer[idx] = mixed;
+                            }
+                            _chirpIndex++;
+                        }
+                        else
+                        {
+                            _chirpIndex = -1;
+                            _chirpData = null;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return samplesRead;
         }
     }
 }

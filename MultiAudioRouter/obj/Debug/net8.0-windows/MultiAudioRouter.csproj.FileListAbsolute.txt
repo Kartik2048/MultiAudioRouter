@@ -28,3 +28,5 @@ C:\Users\karti\Documents\MultiAudioRouter\MultiAudioRouter\obj\Debug\net8.0-wind
 C:\Users\karti\Documents\MultiAudioRouter\MultiAudioRouter\obj\Debug\net8.0-windows\MultiAudioRouter.pdb
 C:\Users\karti\Documents\MultiAudioRouter\MultiAudioRouter\obj\Debug\net8.0-windows\MultiAudioRouter.genruntimeconfig.cache
 C:\Users\karti\Documents\MultiAudioRouter\MultiAudioRouter\obj\Debug\net8.0-windows\ref\MultiAudioRouter.dll
+C:\Users\karti\Documents\MultiAudioRouter\MultiAudioRouter\obj\Debug\net8.0-windows\CalibrationSetupView.baml
+C:\Users\karti\Documents\MultiAudioRouter\MultiAudioRouter\obj\Debug\net8.0-windows\CalibrationSetupView.g.cs

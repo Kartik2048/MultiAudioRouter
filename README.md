@@ -1,45 +1,43 @@
-# Walkthrough - MultiAudioRouter WPF Application
+# MultiAudioRouter WPF Application
 
 The **MultiAudioRouter** is a modern, premium Windows desktop application built with WPF and .NET 8.0. It leverages the **NAudio** framework to capture system playback audio in real-time and routes it simultaneously to multiple selected audio outputs.
 
 ## UI Design & Aesthetics
 
 The interface is styled using a modern, cohesive dark theme layout. Key details:
-- **Color Palette**: Deep dark background (`#121214`), cards background (`#1E1E24`), borders (`#2D2D34`), accented with Indigo (`#6366F1`), Success Green (`#10B981`), and Danger Red (`#EF4444`).
-- **Interactive Checklist**: Displays all active system rendering audio devices with status details (sample rate, channel count, default device tags) using standard and custom vectors.
+- **Color Palette**: Deep dark background (`#121214`), card backgrounds (`#1E1E24`), borders (`#2D2D34`), accented with Indigo (`#6366F1`), Success Green (`#10B981`), and Danger Red (`#EF4444`).
+- **Interactive Checklist**: Displays all active system rendering audio devices with status details (sample rate, channel count, default device tags).
 - **Dynamic Control**: A large visual action button changes styling and text based on state ("Start Routing" -> "Stop Routing").
 - **Live Output Level Indicator**: Includes a real-time peak audio volume meter showing decibel activity in a smooth visual bar at 30 fps using a low-overhead background capture and dispatcher polling design.
 
 ## Technical Architecture
 
-The core routing logic in [MainWindow.xaml.cs](file:///C:/Users/karti/Documents/MultiAudioRouter/MultiAudioRouter/MainWindow.xaml.cs) works as follows:
+The core routing logic in [MainWindow.xaml.cs] works as follows:
 
 1. **Loopback Capture**:
-   - Uses `WasapiLoopbackCapture` targetting the default system rendering device.
+   - Uses `WasapiLoopbackCapture` targeting the default system rendering device.
    - Captures playback audio blocks in the system's mix format (typically IEEE 32-bit float PCM).
 
-2. **Multi-device Routing engine**:
+2. **Latency-Controlled Routing Engine**:
    - Replicates audio blocks to a list of active `AudioRoute` instances.
-   - Each route writes the block to a `BufferedWaveProvider`.
-   - To prevent latency build-up, `DiscardOnBufferOverflow = true` is set on the buffers.
-   - The buffer duration is set to 500 milliseconds (`BufferDuration = TimeSpan.FromMilliseconds(500)`) to balance low latency with stable, stutter-free playback.
+   - Each route writes the block to a `BufferedWaveProvider` with low latency (`WasapiOut` buffer set to **30ms**).
+   - **Active Latency Control**: To prevent buffer buildup from clock drift, network latency, or scheduling jitter, the route monitors `Buffer.BufferedBytes`. If it exceeds **100ms**, it discards the oldest samples to bring it back to **60ms** (double the player size, ensuring smooth stutter-free playback without lag accumulation).
 
-3. **Dynamic Resampling**:
-   - If the target device's sample rate matches the captured sample rate, the resampler is bypassed entirely, and the buffer is fed directly to WASAPI, which implicitly handles bit depth and channel differences.
-   - If they differ (mismatching sample rates), the audio is dynamically resampled using `MediaFoundationResampler` to the target device's native format.
+3. **Dynamic Resampling & Channel Mapping**:
+   - Bypasses resampling if formats match. Otherwise, dynamically resampler uses `WdlResamplingSampleProvider` at the end of the pipeline.
+   - Supports channel isolation modes (Stereo, LeftOnly, RightOnly) and crossovers (LowPass, HighPass, FullRange).
 
 4. **Safety & Loop Protection**:
-   - Compares target device IDs with the default playback device ID.
-   - Prompts the user with a confirmation dialog if they attempt to route the loopback back into the default device itself, shielding the system from severe audio loopback echoes.
+   - Prompts the user with a confirmation dialog if they attempt to route the loopback back into the default device itself, shielding the system from feedback loops.
 
-5. **Live Route Changes**:
-   - The checklist handles dynamic addition and removal of device routing endpoints *on-the-fly* without interrupting or restarting the capture recording session.
+5. **Acoustic Calibration Loop (Auto-Sync)**:
+   - Plays a **logarithmic chirp sweep** (500Hz to 8kHz, 250ms duration) to both devices.
+   - **Continuous Keep-Alive**: Plays a silent 50Hz hum during calibration to keep WASAPI pipelines active and prevent silent buffers from freezing.
+   - Uses **matched filtering (cross-correlation)** on microphone capture (`WasapiCapture` with 300ms warm-up) to identify reference and target peaks, obtaining sub-millisecond measurement precision.
+   - **Iterative Control Loop**: Runs up to 3 passes to actively adjust relative delays on-the-fly until the tracking error converges below 2.0ms.
+   - **Guided Sync Warnings**: If the reference speaker (default device) is faster, the computed delay is set in the checklist and a warning guide pops up explaining how the user can route it to activate the sync delay.
 
-6. **Latency Calibration & Compensation (Hybrid Sync)**:
-   - Coexists a manual 'Delay (ms)' slider with an automated acoustic calibration system.
-   - An "Auto-Sync" button plays a 50ms, 1kHz sine wave pulse to the default Master device, then to the selected Routed device.
-   - Using low-latency microphone feedback (`WaveInEvent`), the application measures the time delay until a volume spike threshold is crossed, showing the measured result on the UI.
-   - Calculates the absolute latency delta between the Master and Routed devices, and automatically updates the manual delay slider for the faster device to offset the latency, leaving the manual sliders as the final source of truth.
+---
 
 ## Verification Results
 
@@ -47,17 +45,18 @@ The application builds cleanly under .NET 8.0:
 - **Warning Count**: 0
 - **Error Count**: 0
 
-### Build Command
-```bash
-dotnet build
+### Build & Run Commands
+To build the application:
+```powershell
+C:\Users\karti\.dotnet\dotnet.exe build
 ```
 
-```text
-  Determining projects to restore...
-  All projects are up-to-date for restore.
-  MultiAudioRouter -> C:\Users\karti\Documents\MultiAudioRouter\MultiAudioRouter\bin\Debug\net8.0-windows\MultiAudioRouter.dll
+To run all unit tests:
+```powershell
+C:\Users\karti\.dotnet\dotnet.exe test
+```
 
-Build succeeded.
-    0 Warning(s)
-    0 Error(s)
+To run the application:
+```powershell
+C:\Users\karti\.dotnet\dotnet.exe run --project MultiAudioRouter
 ```

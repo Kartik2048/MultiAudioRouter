@@ -1,11 +1,12 @@
 <Window x:Class="MultiAudioRouter.MainWindow"
+        x:Name="RootWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:MultiAudioRouter"
         mc:Ignorable="d"
-        Title="MultiAudioRouter" Height="650" Width="480"
+        Title="MultiAudioRouter" Height="720" Width="500"
         Background="#121214" Foreground="#F3F4F6"
         WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize"
         FontFamily="Segoe UI, Arial">
@@ -256,6 +257,7 @@
     <Grid Margin="20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/> <!-- Header -->
+            <RowDefinition Height="Auto"/> <!-- Global Crossover Slider -->
             <RowDefinition Height="Auto"/> <!-- Control Panel -->
             <RowDefinition Height="*"/>    <!-- Device List -->
             <RowDefinition Height="Auto"/> <!-- Action Panel -->
@@ -279,20 +281,34 @@
             <Border Height="1" Background="{StaticResource BorderColor}" Margin="0,15,0,0"/>
         </StackPanel>
 
+        <!-- Global Crossover Panel -->
+        <Border Grid.Row="1" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="60"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Crossover" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}" Width="70"/>
+                <Slider Grid.Column="1" x:Name="SldGlobalCrossover" Minimum="40" Maximum="200" Value="80" Style="{StaticResource ModernSlider}" VerticalAlignment="Center" ValueChanged="SldGlobalCrossover_ValueChanged" SmallChange="1" LargeChange="10" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                <TextBlock Grid.Column="2" x:Name="TxtGlobalCrossover" Text="{Binding ElementName=SldGlobalCrossover, Path=Value, StringFormat={}{0:0} Hz}" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextAlignment="Right"/>
+            </Grid>
+        </Border>
+
         <!-- Control Panel (Refresh & Auto-Sync) -->
-        <Grid Grid.Row="1" Margin="0,0,0,10">
+        <Grid Grid.Row="2" Margin="0,0,0,10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock Text="Available Outputs" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"/>
-            <Button Grid.Column="1" Content="Auto-Sync" Width="95" Height="30" Style="{StaticResource ActionButton}" Background="#312E81" Margin="0,0,10,0" Click="BtnAutoSync_Click"/>
+            <Button Grid.Column="1" x:Name="BtnAutoSync" Content="Auto-Sync" Width="120" Height="30" Style="{StaticResource ActionButton}" Background="#312E81" Margin="0,0,10,0" Click="BtnAutoSync_Click"/>
             <Button Grid.Column="2" Content="Refresh" Width="80" Height="30" Style="{StaticResource ActionButton}" Background="#2A2A35" Click="BtnRefresh_Click"/>
         </Grid>
 
         <!-- Device List -->
-        <Border Grid.Row="2" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="5">
+        <Border Grid.Row="3" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="5">
             <ListBox x:Name="LstDevices" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                 <ListBox.Resources>
                     <Style TargetType="ScrollBar" BasedOn="{StaticResource ModernScrollBar}"/>
@@ -347,7 +363,7 @@
                             <!-- Controls Panel (Delay, Volume, Channel Isolation) -->
                             <StackPanel Grid.Column="3" Orientation="Vertical" VerticalAlignment="Center" Margin="10,0,5,0">
                                 <!-- Delay Control -->
-                                <Grid Margin="0,2">
+                                <Grid Margin="0,2" Visibility="{Binding ElementName=RootWindow, Path=DelaySlidersVisibility}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="70"/>
@@ -375,10 +391,23 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="Chan" FontSize="10" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Width="30"/>
-                                    <ComboBox Grid.Column="1" SelectedValue="{Binding IsolationMode, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag" Style="{StaticResource ModernComboBox}" Width="115" Height="22" HorizontalAlignment="Right">
+                                    <ComboBox Grid.Column="1" SelectedValue="{Binding IsolationMode, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag" Style="{StaticResource ModernComboBox}" Width="120" Height="22" HorizontalAlignment="Right" SelectionChanged="IsolationComboBox_SelectionChanged">
                                         <ComboBoxItem Content="Stereo" Tag="{x:Static local:ChannelIsolationMode.Stereo}" Style="{StaticResource ModernComboBoxItem}"/>
                                         <ComboBoxItem Content="Left Only" Tag="{x:Static local:ChannelIsolationMode.LeftOnly}" Style="{StaticResource ModernComboBoxItem}"/>
                                         <ComboBoxItem Content="Right Only" Tag="{x:Static local:ChannelIsolationMode.RightOnly}" Style="{StaticResource ModernComboBoxItem}"/>
+                                    </ComboBox>
+                                </Grid>
+                                <!-- Frequency Mode ComboBox -->
+                                <Grid Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="X-Over" FontSize="10" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Width="30"/>
+                                    <ComboBox Grid.Column="1" SelectedValue="{Binding CrossoverMode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag" Style="{StaticResource ModernComboBox}" Width="120" Height="22" HorizontalAlignment="Right" SelectionChanged="CrossoverComboBox_SelectionChanged">
+                                        <ComboBoxItem Content="Full Range" Tag="{x:Static local:CrossoverMode.FullRange}" Style="{StaticResource ModernComboBoxItem}"/>
+                                        <ComboBoxItem Content="Subwoofer (Low-Pass)" Tag="{x:Static local:CrossoverMode.LowPass}" Style="{StaticResource ModernComboBoxItem}"/>
+                                        <ComboBoxItem Content="Mains (High-Pass)" Tag="{x:Static local:CrossoverMode.HighPass}" Style="{StaticResource ModernComboBoxItem}"/>
                                     </ComboBox>
                                 </Grid>
                                 <!-- Measured Latency readout -->
@@ -391,12 +420,12 @@
         </Border>
 
         <!-- Start/Stop Action -->
-        <StackPanel Grid.Row="3" Margin="0,20,0,10">
+        <StackPanel Grid.Row="4" Margin="0,20,0,10">
             <Button x:Name="BtnStartStop" Content="Start Routing" Style="{StaticResource ActionButton}" Background="{StaticResource SuccessColor}" Click="BtnStartStop_Click"/>
         </StackPanel>
 
         <!-- Activity/Status Meter -->
-        <Border Grid.Row="4" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,5,0,0">
+        <Border Grid.Row="5" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,5,0,0">
             <StackPanel>
                 <Grid>
                     <Grid.ColumnDefinitions>
